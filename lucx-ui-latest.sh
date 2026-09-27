@@ -647,17 +647,31 @@ PY
 read_tty_line() {
     local tty="/dev/tty" ans=""
     [[ -r /dev/tty ]] || tty=""
-    if [[ -n "$tty" ]]; then read -r ans <"$tty" || ans=""; else read -r ans || ans=""; fi
-    printf '%s' "$ans"
+    # Readline (-e) keeps pasted text and terminal wrapping in sync.  The long
+    # description is printed on its own line, so only the short marker wraps.
+    if [[ -n "$tty" ]]; then
+        IFS= read -e -r -p '> ' ans <"$tty" || ans=""
+    else
+        printf '> ' >&2
+        IFS= read -r ans || ans=""
+    fi
+    # Remove CR from CRLF pastes and trim only the edges.  Embedded whitespace
+    # stays intact and is rejected by domain validation instead of being joined.
+    ans=${ans//$'\r'/}
+    ans="${ans#"${ans%%[!$' \t']*}"}"
+    ans="${ans%"${ans##*[!$' \t']}"}"
+    REPLY="$ans"
 }
 ui() { if [[ -w /dev/tty ]]; then printf '%s' "$1" >/dev/tty; else printf '%s' "$1" >&2; fi; }
 ui_err() { if [[ -w /dev/tty ]]; then msg_err "$1" >/dev/tty; else msg_err "$1" >&2; fi; }
 prompt_domain_a_record() {
     local prompt="$1" d
+    DOMAIN_INPUT=""
     while true; do
         ui "$prompt"
-        d=$(read_tty_line)
-        d=$(printf '%s' "$d" | LC_ALL=C tr -d '[:space:]' | LC_ALL=C tr '[:upper:]' '[:lower:]')
+        ui $'\n'
+        read_tty_line
+        d=$(printf '%s' "$REPLY" | LC_ALL=C tr '[:upper:]' '[:lower:]')
         [[ -n "$d" ]] || continue
         if [[ ! "$d" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
             ui_err "Некорректный домен: ${d}"
@@ -667,7 +681,7 @@ prompt_domain_a_record() {
             ui_err "A-запись ${d} не указывает на ${IP4}."
             continue
         fi
-        printf '%s' "$d"
+        DOMAIN_INPUT="$d"
         return 0
     done
 }
@@ -677,7 +691,8 @@ choose_webproxy_domain() {
     local d p; webproxy_domain=""
     while true; do
         printf -v p 'Домен для Telegram WEB-proxy (создайте A-запись на IP "%s"): ' "$IP4"
-        d=$(prompt_domain_a_record "$p")
+        prompt_domain_a_record "$p"
+        d="$DOMAIN_INPUT"
         if [[ "$d" == "$domain" || "$d" == "$reality_domain" ]]; then
             ui_err "Домен WEB-proxy должен отличаться от домена панели и Reality."
             continue
@@ -1634,7 +1649,8 @@ validate_domains() {
     fi
     if [[ -z "$domain" ]]; then
         printf -v p 'Домен панели (создайте A-запись на IP "%s"): ' "$IP4"
-        domain=$(prompt_domain_a_record "$p")
+        prompt_domain_a_record "$p"
+        domain="$DOMAIN_INPUT"
     fi
     SubDomain=$(echo "$domain"   | sed 's/^[^ ]* \|\..*//g')
     MainDomain=$(echo "$domain"  | sed 's/.*\.\([^.]*\..*\)$/\1/')
@@ -1647,7 +1663,8 @@ validate_domains() {
     if [[ -z "$reality_domain" ]]; then
         while true; do
             printf -v p 'Домен для Reality (создайте A-запись на IP "%s"): ' "$IP4"
-            d=$(prompt_domain_a_record "$p")
+            prompt_domain_a_record "$p"
+            d="$DOMAIN_INPUT"
             if [[ "$d" == "$domain" ]]; then
                 ui_err "Домен панели и Reality должны отличаться."
                 continue
@@ -2362,6 +2379,8 @@ setup_cron() {
 # ─────────────────────────────────────────────────────────────────────────────
 setup_firewall() {
     ufw disable
+    # CSQTT and other tunnel subnets require forwarding through UFW.
+    ufw default allow routed
     ufw allow 22/tcp
     ufw allow 80/tcp
     ufw allow 443/tcp
