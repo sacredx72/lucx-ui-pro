@@ -59,6 +59,7 @@ check_cpu
 XUIDB="/etc/x-ui/x-ui.db"
 GITHUB_RAW="https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main"
 FAKE_SITE_COUNT=50
+PREINSTALL_STATE_DIR="/var/lib/lucx-ui-preinstall"
 
 # ─── Default argument values ─────────────────────────────────────────────────
 domain=""
@@ -86,6 +87,84 @@ DEPLOY_RKN=""
 CUSTOM_DOH_URL=""
 CUSTOM_DOH_HOST=""
 CUSTOM_DOH_IP=""
+
+# ─── Preserve firewall state for a reversible full uninstall ────────────────
+save_firewall_state() {
+    local state_dir="${PREINSTALL_STATE_DIR}/firewall"
+    [[ -f "${state_dir}/saved" ]] && return 0
+
+    mkdir -p "$state_dir"
+    {
+        if command -v ufw >/dev/null 2>&1; then
+            echo 'UFW_WAS_INSTALLED=1'
+            if ufw status 2>/dev/null | grep -q '^Status: active'; then
+                echo 'UFW_WAS_ACTIVE=1'
+            else
+                echo 'UFW_WAS_ACTIVE=0'
+            fi
+        else
+            echo 'UFW_WAS_INSTALLED=0'
+            echo 'UFW_WAS_ACTIVE=0'
+        fi
+    } > "${state_dir}/state"
+
+    tar -cpf "${state_dir}/ufw-config.tar" \
+        /etc/ufw /etc/default/ufw /etc/ipset.conf /etc/iptables/ipsets \
+        2>/dev/null || true
+    command -v iptables-save >/dev/null 2>&1 && \
+        iptables-save > "${state_dir}/iptables.v4" 2>/dev/null || true
+    command -v ip6tables-save >/dev/null 2>&1 && \
+        ip6tables-save > "${state_dir}/iptables.v6" 2>/dev/null || true
+    touch "${state_dir}/saved"
+}
+
+restore_firewall_state() {
+    local state_dir="${PREINSTALL_STATE_DIR}/firewall"
+    local UFW_WAS_INSTALLED=0 UFW_WAS_ACTIVE=0
+
+    if [[ ! -f "${state_dir}/saved" || ! -f "${state_dir}/state" ]]; then
+        # Older installations did not save a snapshot. Their documented
+        # starting point was a clean server, so use UFW's clean inactive state.
+        if command -v ufw >/dev/null 2>&1; then
+            ufw --force disable >/dev/null 2>&1 || true
+            ufw --force reset >/dev/null 2>&1 || true
+            ufw default deny incoming >/dev/null 2>&1 || true
+            ufw default allow outgoing >/dev/null 2>&1 || true
+            ufw default deny routed >/dev/null 2>&1 || true
+            ufw --force disable >/dev/null 2>&1 || true
+        fi
+        msg_inf "Firewall snapshot not found; UFW reset to a clean disabled state."
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    source "${state_dir}/state"
+    if command -v ufw >/dev/null 2>&1; then
+        ufw --force disable >/dev/null 2>&1 || true
+        ufw --force reset >/dev/null 2>&1 || true
+    fi
+
+    if [[ "$UFW_WAS_INSTALLED" == "1" ]]; then
+        [[ -f "${state_dir}/ufw-config.tar" ]] && \
+            tar -xpf "${state_dir}/ufw-config.tar" -C / 2>/dev/null || true
+        if [[ "$UFW_WAS_ACTIVE" == "1" ]]; then
+            ufw --force enable >/dev/null 2>&1 || true
+        else
+            ufw --force disable >/dev/null 2>&1 || true
+        fi
+    else
+        ufw --force disable >/dev/null 2>&1 || true
+    fi
+
+    [[ -s "${state_dir}/iptables.v4" ]] && \
+        command -v iptables-restore >/dev/null 2>&1 && \
+        iptables-restore < "${state_dir}/iptables.v4" 2>/dev/null || true
+    [[ -s "${state_dir}/iptables.v6" ]] && \
+        command -v ip6tables-restore >/dev/null 2>&1 && \
+        ip6tables-restore < "${state_dir}/iptables.v6" 2>/dev/null || true
+
+    msg_ok "Firewall restored to its pre-install state."
+}
 
 # ─── Stop & clean previous install (called from main, after domain validation) ─
 clean_previous_install() {
@@ -1378,27 +1457,83 @@ install_rkn_guard() {
     msg_ok "rkn-guard установлен; автообновление баз и программы включено."
 }
 
+cleanup_rkn_guard_fallback() {
+    local cmd parent set_name file tmp
+
+    # Remove live jumps/chains even when the rkn-guard binary is missing or
+    # its own uninstall command fails.
+    for cmd in iptables ip6tables; do
+        command -v "$cmd" >/dev/null 2>&1 || continue
+        for parent in INPUT ufw-before-input ufw6-before-input; do
+            while "$cmd" -C "$parent" -j SCANNERS-BLOCK >/dev/null 2>&1; do
+                "$cmd" -D "$parent" -j SCANNERS-BLOCK >/dev/null 2>&1 || break
+            done
+        done
+        "$cmd" -F SCANNERS-BLOCK >/dev/null 2>&1 || true
+        "$cmd" -X SCANNERS-BLOCK >/dev/null 2>&1 || true
+    done
+
+    if command -v ipset >/dev/null 2>&1; then
+        for set_name in SCANNERS-BLOCK-V4 SCANNERS-BLOCK-V6; do
+            ipset flush "$set_name" >/dev/null 2>&1 || true
+            ipset destroy "$set_name" >/dev/null 2>&1 || true
+        done
+    fi
+
+    # Remove the complete managed block, including rules inside it that do not
+    # repeat the SCANNERS-BLOCK name on every line.
+    for file in /etc/ufw/before.rules /etc/ufw/before6.rules; do
+        [[ -f "$file" ]] || continue
+        tmp="${file}.lucx-clean.$$"
+        awk '
+            /# SCANNERS-BLOCK chain - managed by antiscan/ { skip=1; next }
+            skip && /# END SCANNERS-BLOCK/ { skip=0; next }
+            !skip { print }
+        ' "$file" > "$tmp" && cat "$tmp" > "$file"
+        rm -f "$tmp"
+    done
+}
+
 uninstall_rkn_guard() {
     local rc=0
-    systemctl disable --now rkn-guard-list-update.timer rkn-guard-self-update.timer 2>/dev/null || true
-    systemctl stop rkn-guard-list-update.service rkn-guard-self-update.service 2>/dev/null || true
+    systemctl disable --now \
+        rkn-guard-list-update.timer rkn-guard-self-update.timer \
+        antiscan-aggregate.timer antiscan-aggregate.service \
+        antiscan-move-rules.service antiscan-ipset-restore.service \
+        2>/dev/null || true
+    systemctl stop \
+        rkn-guard-list-update.service rkn-guard-self-update.service \
+        antiscan-aggregate.service antiscan-move-rules.service \
+        antiscan-ipset-restore.service 2>/dev/null || true
     rm -f /etc/systemd/system/rkn-guard-list-update.service \
           /etc/systemd/system/rkn-guard-list-update.timer \
           /etc/systemd/system/rkn-guard-self-update.service \
-          /etc/systemd/system/rkn-guard-self-update.timer
+          /etc/systemd/system/rkn-guard-self-update.timer \
+          /etc/systemd/system/antiscan-ipset-restore.service \
+          /etc/systemd/system/antiscan-move-rules.service \
+          /etc/systemd/system/antiscan-aggregate.service \
+          /etc/systemd/system/antiscan-aggregate.timer
     rm -f /usr/local/lib/lucx-ui-pro/rkn-guard-list-update.sh \
           /usr/local/lib/lucx-ui-pro/rkn-guard-self-update.sh
     if command -v rkn-guard >/dev/null 2>&1; then
-        rkn-guard uninstall --yes || rc=$?
+        rkn-guard uninstall --yes --remove-logs || rc=$?
     fi
-    rm -f /usr/local/bin/rkn /opt/rkn-guard-manager.sh /opt/rkn-guard-manual.list
+    cleanup_rkn_guard_fallback
+    rm -f /usr/local/bin/rkn-guard /usr/local/bin/rkn \
+          /usr/local/bin/antiscan-aggregate-logs.sh \
+          /opt/rkn-guard-manager.sh /opt/rkn-guard-manual.list \
+          /etc/ipset.conf /etc/iptables/ipsets \
+          /etc/rsyslog.d/10-iptables-scanners.conf \
+          /etc/logrotate.d/iptables-scanners \
+          /var/log/iptables-scanners-*
+    rm -rf /usr/local/lib/lucx-ui-pro
     systemctl daemon-reload
-    systemctl reset-failed rkn-guard-list-update.service rkn-guard-self-update.service 2>/dev/null || true
+    systemctl reset-failed 2>/dev/null || true
+    systemctl restart rsyslog 2>/dev/null || true
     if [[ $rc -ne 0 ]]; then
-        msg_err "rkn-guard удалён не полностью (код ${rc}); проверьте правила iptables/ipset."
-        return "$rc"
+        msg_inf "rkn-guard returned code ${rc}; remaining files were removed forcibly."
     fi
-    msg_ok "rkn-guard удалён. x-ui, nginx и AdGuard Home не затронуты."
+    msg_ok "rkn-guard removed."
 }
 
 uninstall_adguard() {
@@ -1585,20 +1720,31 @@ print_adguard_results() {
 # UNINSTALL
 # ─────────────────────────────────────────────────────────────────────────────
 uninstall_xui() {
-    printf 'y\n' | x-ui uninstall >/dev/null 2>&1 || true
+    # Remove optional components before deleting their binaries and configs.
+    uninstall_rkn_guard >/dev/null 2>&1 || true
     uninstall_adguard 2>/dev/null || true
+    printf 'y\n' | x-ui uninstall >/dev/null 2>&1 || true
     systemctl stop x-ui nginx mtr-backend AdGuardHome 2>/dev/null || true
     systemctl disable x-ui nginx mtr-backend AdGuardHome 2>/dev/null || true
     pkill -f 'mtg-linux-' >/dev/null 2>&1 || true
     crontab -l 2>/dev/null | grep -vE 'certbot|x-ui|cloudflareips|nginx -s reload|update-geodata' | crontab - || true
-    rm -rf /etc/x-ui/ /usr/local/x-ui/ /usr/local/lib/3x-ui-pro/ /root/cert/ /opt/AdGuardHome /root/.lucx-adguard-info /var/www/diagnostics /var/www/tproxy
-    rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service /etc/systemd/system/mtr-backend.service /etc/default/x-ui /etc/nginx/snippets/adguard.conf
+    rm -rf /etc/x-ui/ /usr/local/x-ui/ /usr/local/lib/3x-ui-pro/ \
+           /usr/local/lib/lucx-ui-pro/ /root/cert/ /opt/AdGuardHome \
+           /root/.lucx-adguard-info /root/.lucx-tg-web-proxy-info \
+           /var/www/diagnostics /var/www/tproxy
+    rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service \
+          /etc/systemd/system/mtr-backend.service \
+          /etc/systemd/system/AdGuardHome.service \
+          /etc/default/x-ui /etc/nginx/snippets/adguard.conf
     $Pak -y remove nginx nginx-common nginx-core nginx-full python3-certbot-nginx
     $Pak -y purge  nginx nginx-common nginx-core nginx-full python3-certbot-nginx
     $Pak -y autoremove
     $Pak -y autoclean
     rm -rf /var/www/html/ /var/www/diagnostics/ /var/www/subpage/ /var/www/tproxy/ /etc/nginx/ /usr/share/nginx/
     systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed 2>/dev/null || true
+    restore_firewall_state
+    rm -rf "$PREINSTALL_STATE_DIR"
 }
 
 if [[ ${UNINSTALL} == *"y"* ]]; then
@@ -2435,6 +2581,7 @@ main() {
     choose_xray_dns
     choose_extra_inbounds
     choose_webproxy_domain
+    save_firewall_state
     clean_previous_install
     install_packages
     get_server_ip
