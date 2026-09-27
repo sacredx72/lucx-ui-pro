@@ -31,13 +31,11 @@ wget -qO lucx-ui-latest.sh https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro
 bash lucx-ui-latest.sh -install y
 ```
 
-1. panel.example.com - домен панели
-
-2. r.example.com - домен reality
+Повторный запуск запускает полное удаление и повторную установку.
 
 Для них нужно создать A-запись на IP вашего VPS
 
-**Полное удаление (панель + nginx + AdGuard)**
+**Полное удаление (панель + nginx + AdGuard + rkn-guard + tg-web-proxy)**
 
 ```bash
 bash lucx-ui-latest.sh -uninstall y
