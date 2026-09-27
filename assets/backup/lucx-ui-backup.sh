@@ -298,9 +298,11 @@ PY_TG_RESTORE
 
     # ── UFW ───────────────────────────────────────────────────────────────
     blue "==> Restoring UFW..."
-    # user.rules were already copied by file restore; just (re-)enable
+    # user.rules were already copied by file restore.  Always allow routed
+    # traffic so restored CSQTT/tunnel subnets can be forwarded through UFW.
+    ufw default allow routed 2>/dev/null || true
     ufw --force enable 2>/dev/null || true
-    green "    UFW enabled"
+    green "    UFW enabled (routed traffic allowed)"
 
     echo
     green "==> Restore complete."
