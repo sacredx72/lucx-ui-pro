@@ -1759,6 +1759,32 @@ if [[ ${UNINSTALL} == *"y"* ]]; then
     clear && msg_ok "Completely Uninstalled!" && exit 0
 fi
 
+# A normal repeated full installation must start from the same clean state as
+# an explicit "-uninstall y". Component-only maintenance commands are excluded.
+is_full_install_request() {
+    [[ "${ADGUARD_ONLY}" != "y" &&
+       "${ADGUARD_UNINSTALL}" != "y" &&
+       "${RKN_GUARD_ONLY}" != "y" &&
+       "${RKN_GUARD_UNINSTALL}" != "y" &&
+       "${TG_WEB_PROXY_ONLY}" != "y" &&
+       "${TG_WEB_PROXY_UNINSTALL}" != "y" ]]
+}
+
+existing_lucx_install_detected() {
+    [[ -d /etc/x-ui ||
+       -d /usr/local/x-ui ||
+       -f /usr/bin/x-ui ||
+       -f /etc/systemd/system/x-ui.service ||
+       -d "$PREINSTALL_STATE_DIR" ]]
+}
+
+if is_full_install_request && existing_lucx_install_detected; then
+    msg_inf "Existing LucX-UI installation detected."
+    msg_inf "Running complete uninstall before asking new installation options..."
+    uninstall_xui
+    msg_ok "Previous installation completely removed."
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GET SERVER IP
 # ─────────────────────────────────────────────────────────────────────────────
