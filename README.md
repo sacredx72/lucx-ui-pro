@@ -33,8 +33,6 @@ bash lucx-ui-latest.sh -install y
 
 Повторный запуск запускает полное удаление и повторную установку.
 
-Для них нужно создать A-запись на IP вашего VPS
-
 **Полное удаление (панель + nginx + AdGuard + rkn-guard + tg-web-proxy)**
 
 ```bash
