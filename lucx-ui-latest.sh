@@ -64,8 +64,8 @@ PREINSTALL_STATE_DIR="/var/lib/lucx-ui-preinstall"
 # ─── Default argument values ─────────────────────────────────────────────────
 domain=""
 reality_domain=""
-UNINSTALL="x"
-INSTALL="y"
+UNINSTALL=""
+INSTALL=""
 AUTODOMAIN="n"
 CFALLOW="n"
 PANEL_VERSION=""
@@ -175,7 +175,7 @@ restore_firewall_state() {
 
 # ─── Stop & clean previous install (called from main, after domain validation) ─
 clean_previous_install() {
-    uninstall_adguard 2>/dev/null || true
+    uninstall_adguard quiet 2>/dev/null || true
     systemctl stop x-ui 2>/dev/null || true
     rm -rf /etc/systemd/system/x-ui.service
     rm -rf /usr/local/x-ui
@@ -235,23 +235,72 @@ config_username=$(gen_random_string 10)
 config_password=$(gen_random_string 10)
 
 # ─── Argument parsing ────────────────────────────────────────────────────────
+usage() {
+    cat <<'EOF'
+Usage:
+  bash lucx-ui-latest.sh -install y [options]
+  bash lucx-ui-latest.sh -uninstall y
+  bash lucx-ui-latest.sh -adguard y
+  bash lucx-ui-latest.sh -adguard-uninstall y
+  bash lucx-ui-latest.sh -rkn-guard y
+  bash lucx-ui-latest.sh -rkn-guard-uninstall y
+  bash lucx-ui-latest.sh -tg-web-proxy y
+  bash lucx-ui-latest.sh -tg-web-proxy-uninstall y
+EOF
+}
+
+require_arg_value() {
+    [[ $# -ge 2 && -n "${2:-}" && "${2:-}" != -* ]] || {
+        msg_err "Option ${1} requires a value."
+        usage
+        exit 2
+    }
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        -install)          INSTALL="$2";           shift 2 ;;
-        -subdomain)        domain="$2";            shift 2 ;;
-        -reality_domain)   reality_domain="$2";    shift 2 ;;
-        -ONLY_CF_IP_ALLOW) CFALLOW="$2";           shift 2 ;;
-        -version)          PANEL_VERSION="$2";     shift 2 ;;
-        -adguard)          ADGUARD_ONLY="$2";      shift 2 ;;
-        -adguard-uninstall) ADGUARD_UNINSTALL="$2"; shift 2 ;;
-        -rkn-guard)        RKN_GUARD_ONLY="$2";    shift 2 ;;
-        -rkn-guard-uninstall) RKN_GUARD_UNINSTALL="$2"; shift 2 ;;
-        -tg-web-proxy)     TG_WEB_PROXY_ONLY="$2"; shift 2 ;;
-        -tg-web-proxy-uninstall) TG_WEB_PROXY_UNINSTALL="$2"; shift 2 ;;
-        -uninstall)        UNINSTALL="$2";         shift 2 ;;
-        *)                 shift 1 ;;
+        -install)          require_arg_value "$@"; INSTALL="$2";            shift 2 ;;
+        -subdomain)        require_arg_value "$@"; domain="$2";             shift 2 ;;
+        -reality_domain)   require_arg_value "$@"; reality_domain="$2";     shift 2 ;;
+        -ONLY_CF_IP_ALLOW) require_arg_value "$@"; CFALLOW="$2";            shift 2 ;;
+        -version)          require_arg_value "$@"; PANEL_VERSION="$2";      shift 2 ;;
+        -adguard)          require_arg_value "$@"; ADGUARD_ONLY="$2";       shift 2 ;;
+        -adguard-uninstall) require_arg_value "$@"; ADGUARD_UNINSTALL="$2"; shift 2 ;;
+        -rkn-guard)        require_arg_value "$@"; RKN_GUARD_ONLY="$2";     shift 2 ;;
+        -rkn-guard-uninstall) require_arg_value "$@"; RKN_GUARD_UNINSTALL="$2"; shift 2 ;;
+        -tg-web-proxy)     require_arg_value "$@"; TG_WEB_PROXY_ONLY="$2";  shift 2 ;;
+        -tg-web-proxy-uninstall) require_arg_value "$@"; TG_WEB_PROXY_UNINSTALL="$2"; shift 2 ;;
+        -uninstall)        require_arg_value "$@"; UNINSTALL="$2";          shift 2 ;;
+        -h|--help)         usage; exit 0 ;;
+        *)                 msg_err "Unknown option: $1"; usage; exit 2 ;;
     esac
 done
+
+for _action_value in "$INSTALL" "$UNINSTALL" "$ADGUARD_ONLY" "$ADGUARD_UNINSTALL" \
+                     "$RKN_GUARD_ONLY" "$RKN_GUARD_UNINSTALL" \
+                     "$TG_WEB_PROXY_ONLY" "$TG_WEB_PROXY_UNINSTALL"; do
+    [[ -z "$_action_value" || "$_action_value" == "y" ]] || {
+        msg_err "Action options accept only the value: y"
+        usage
+        exit 2
+    }
+done
+[[ "$CFALLOW" == "y" || "$CFALLOW" == "n" ]] || {
+    msg_err "-ONLY_CF_IP_ALLOW accepts only y or n."
+    exit 2
+}
+
+_action_count=0
+for _action_value in "$INSTALL" "$UNINSTALL" "$ADGUARD_ONLY" "$ADGUARD_UNINSTALL" \
+                     "$RKN_GUARD_ONLY" "$RKN_GUARD_UNINSTALL" \
+                     "$TG_WEB_PROXY_ONLY" "$TG_WEB_PROXY_UNINSTALL"; do
+    [[ "$_action_value" == "y" ]] && _action_count=$((_action_count + 1))
+done
+if (( _action_count != 1 )); then
+    msg_err "Specify exactly one valid install or uninstall command."
+    usage
+    exit 2
+fi
 
 # ─── Detect package manager ───────────────────────────────────────────────────
 Pak=$(type apt &>/dev/null && echo "apt" || echo "yum")
@@ -829,7 +878,7 @@ sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"],
 tag = "inbound-tproxy"
 con = sqlite3.connect(db, timeout=30)
 cur = con.cursor()
-row = cur.execute("SELECT id FROM inbounds WHERE protocol='tproxy' OR tag=? LIMIT 1", (tag,)).fetchone()
+row = cur.execute("SELECT id FROM inbounds WHERE tag=? LIMIT 1", (tag,)).fetchone()
 if row:
     con.close(); print("exists"); raise SystemExit(0)
 cur.execute("INSERT INTO inbounds (user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, sniffing) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (1, 0, 0, 0, remark, 1, 0, "127.0.0.1", 11443, "tproxy", json.dumps(settings, ensure_ascii=False), json.dumps(stream, ensure_ascii=False), tag, json.dumps(sniffing, ensure_ascii=False)))
@@ -852,7 +901,7 @@ get_installed_tproxy_domain() {
 import json, sqlite3, sys
 try:
     con = sqlite3.connect(sys.argv[1], timeout=10)
-    row = con.execute("SELECT settings FROM inbounds WHERE protocol='tproxy' OR tag='inbound-tproxy' LIMIT 1").fetchone()
+    row = con.execute("SELECT settings FROM inbounds WHERE tag='inbound-tproxy' LIMIT 1").fetchone()
     con.close()
     if row:
         value = json.loads(row[0] or "{}")
@@ -953,7 +1002,7 @@ remove_tproxy_inbound() {
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1], timeout=30)
 cur = con.cursor()
-ids = [r[0] for r in cur.execute("SELECT id FROM inbounds WHERE protocol='tproxy' OR tag='inbound-tproxy'")]
+ids = [r[0] for r in cur.execute("SELECT id FROM inbounds WHERE tag='inbound-tproxy'")]
 def columns(table):
     try:
         return {r[1] for r in cur.execute('PRAGMA table_info("%s")' % table)}
@@ -975,6 +1024,41 @@ con.close()
 PY_TG_DELETE
 }
 
+force_remove_tproxy_nginx() {
+    local proxy_domain="$1"
+    python3 - "$proxy_domain" <<'PY_TG_FORCE_NGINX'
+import re, sys
+from pathlib import Path
+
+domain = sys.argv[1]
+stream_path = Path("/etc/nginx/stream-enabled/stream.conf")
+redirect_path = Path("/etc/nginx/sites-available/80.conf")
+
+if stream_path.is_file():
+    lines = stream_path.read_text().splitlines()
+    lines = [
+        line for line in lines
+        if not re.match(r'^\s*' + re.escape(domain) + r'\s+tproxy;\s*$', line)
+        and not re.match(r'^\s*upstream\s+tproxy\s*\{[^}]*\}\s*$', line)
+    ]
+    stream_path.write_text("\n".join(lines) + "\n")
+
+if redirect_path.is_file():
+    lines = redirect_path.read_text().splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r'^(\s*server_name\s+)(.*?)(;\s*)$', line)
+        if match:
+            names = [name for name in match.group(2).split() if name != domain]
+            lines[index] = match.group(1) + " ".join(names) + match.group(3)
+            break
+    redirect_path.write_text("\n".join(lines) + "\n")
+PY_TG_FORCE_NGINX
+    if command -v nginx >/dev/null 2>&1; then
+        nginx -t >/dev/null 2>&1 || return 1
+        systemctl reload nginx || return 1
+    fi
+}
+
 ensure_tproxy_certificate() {
     local d="$1" was_active=0 rc=0
     if [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]]; then
@@ -993,25 +1077,34 @@ ensure_tproxy_certificate() {
 }
 
 uninstall_tg_web_proxy() {
-    local keep_cert="${1:-0}" proxy_domain had_proxy=0
+    local keep_cert="${1:-0}" proxy_domain had_proxy=0 nginx_cleanup_failed=0
     proxy_domain=$(get_installed_tproxy_domain)
     if [[ -n "$proxy_domain" ]] || [[ -d /var/www/tproxy ]]; then had_proxy=1; fi
     if [[ -n "$proxy_domain" ]]; then
-        patch_tproxy_nginx uninstall "$proxy_domain" || return 1
+        if ! patch_tproxy_nginx uninstall "$proxy_domain"; then
+            msg_inf "Обычная очистка nginx не удалась; выполняется резервная очистка."
+            force_remove_tproxy_nginx "$proxy_domain" || nginx_cleanup_failed=1
+        fi
     fi
     remove_tproxy_inbound || return 1
     rm -rf /var/www/tproxy
     rm -f /root/.lucx-tg-web-proxy-info
-    if [[ -n "$proxy_domain" && "$keep_cert" != "1" ]]; then
+    if [[ -n "$proxy_domain" ]]; then
         rm -rf "/root/cert/${proxy_domain}"
-        if command -v certbot >/dev/null 2>&1 && [[ -f "/etc/letsencrypt/renewal/${proxy_domain}.conf" ]]; then
+        if [[ "$keep_cert" != "1" ]] &&
+           command -v certbot >/dev/null 2>&1 &&
+           [[ -f "/etc/letsencrypt/renewal/${proxy_domain}.conf" ]]; then
             certbot delete --non-interactive --cert-name "$proxy_domain" >/dev/null 2>&1 || true
         fi
     fi
     if [[ $had_proxy -eq 1 ]] && systemctl is-active --quiet x-ui; then
         x-ui restart >/dev/null 2>&1 || systemctl restart x-ui
     fi
-    msg_ok "Telegram WEB-proxy удалён. Остальные инбаунды, nginx и AdGuard Home сохранены."
+    if [[ $nginx_cleanup_failed -eq 1 ]]; then
+        msg_inf "Telegram WEB-proxy удалён, но конфигурацию nginx нужно проверить вручную."
+        return 1
+    fi
+    msg_ok "Telegram WEB-proxy удалён."
 }
 
 install_tg_web_proxy() {
@@ -1031,11 +1124,7 @@ install_tg_web_proxy() {
     [[ "$IP4" =~ $IP4_REGEX ]] || { msg_err "Не удалось определить IPv4 сервера."; return 1; }
     discover_panel_domains
     DEPLOY_TPROXY="1"
-    if [[ -n "$previous_domain" ]] && domain_a_ok "$previous_domain"; then
-        webproxy_domain="$previous_domain"
-    else
-        choose_webproxy_domain
-    fi
+    choose_webproxy_domain
     ensure_tproxy_certificate "$webproxy_domain" || { msg_err "Не удалось получить сертификат для ${webproxy_domain}."; return 1; }
     install_tproxy_site || return 1
     patch_tproxy_nginx install "$webproxy_domain" || return 1
@@ -1502,29 +1591,39 @@ cleanup_rkn_guard_fallback() {
 }
 
 uninstall_rkn_guard() {
-    local rc=0
+    # Stop only LucX-owned update timers first so they cannot start while the
+    # upstream uninstaller is running. Let rkn-guard remove its own antiscan
+    # units before the fallback cleanup below.
     systemctl disable --now \
         rkn-guard-list-update.timer rkn-guard-self-update.timer \
+        2>/dev/null || true
+    systemctl stop \
+        rkn-guard-list-update.service rkn-guard-self-update.service \
+        2>/dev/null || true
+    rm -f /etc/systemd/system/rkn-guard-list-update.service \
+          /etc/systemd/system/rkn-guard-list-update.timer \
+          /etc/systemd/system/rkn-guard-self-update.service \
+          /etc/systemd/system/rkn-guard-self-update.timer
+    rm -f /usr/local/lib/lucx-ui-pro/rkn-guard-list-update.sh \
+          /usr/local/lib/lucx-ui-pro/rkn-guard-self-update.sh
+
+    if command -v rkn-guard >/dev/null 2>&1; then
+        rkn-guard uninstall --yes --remove-logs >/dev/null 2>&1 || true
+    fi
+
+    # Idempotent fallback: remove anything left by an interrupted, older or
+    # partially failed upstream uninstall without printing harmless errors.
+    systemctl disable --now \
         antiscan-aggregate.timer antiscan-aggregate.service \
         antiscan-move-rules.service antiscan-ipset-restore.service \
         2>/dev/null || true
     systemctl stop \
-        rkn-guard-list-update.service rkn-guard-self-update.service \
         antiscan-aggregate.service antiscan-move-rules.service \
         antiscan-ipset-restore.service 2>/dev/null || true
-    rm -f /etc/systemd/system/rkn-guard-list-update.service \
-          /etc/systemd/system/rkn-guard-list-update.timer \
-          /etc/systemd/system/rkn-guard-self-update.service \
-          /etc/systemd/system/rkn-guard-self-update.timer \
-          /etc/systemd/system/antiscan-ipset-restore.service \
-          /etc/systemd/system/antiscan-move-rules.service \
+    rm -f /etc/systemd/system/antiscan-aggregate.timer \
           /etc/systemd/system/antiscan-aggregate.service \
-          /etc/systemd/system/antiscan-aggregate.timer
-    rm -f /usr/local/lib/lucx-ui-pro/rkn-guard-list-update.sh \
-          /usr/local/lib/lucx-ui-pro/rkn-guard-self-update.sh
-    if command -v rkn-guard >/dev/null 2>&1; then
-        rkn-guard uninstall --yes --remove-logs || rc=$?
-    fi
+          /etc/systemd/system/antiscan-ipset-restore.service \
+          /etc/systemd/system/antiscan-move-rules.service
     cleanup_rkn_guard_fallback
     rm -f /usr/local/bin/rkn-guard /usr/local/bin/rkn \
           /usr/local/bin/antiscan-aggregate-logs.sh \
@@ -1537,13 +1636,13 @@ uninstall_rkn_guard() {
     systemctl daemon-reload
     systemctl reset-failed 2>/dev/null || true
     systemctl restart rsyslog 2>/dev/null || true
-    if [[ $rc -ne 0 ]]; then
-        msg_inf "rkn-guard returned code ${rc}; remaining files were removed forcibly."
-    fi
     msg_ok "rkn-guard removed."
 }
 
 uninstall_adguard() {
+    local quiet="${1:-}"
+    local had_adguard=0
+    [[ -d /opt/AdGuardHome || -f /etc/nginx/snippets/adguard.conf || -f /root/.lucx-adguard-info ]] && had_adguard=1
     systemctl stop AdGuardHome 2>/dev/null || true
     [[ -x /opt/AdGuardHome/AdGuardHome ]] && /opt/AdGuardHome/AdGuardHome -s uninstall 2>/dev/null || true
     rm -rf /opt/AdGuardHome /etc/nginx/snippets/adguard.conf /root/.lucx-adguard-info
@@ -1551,8 +1650,14 @@ uninstall_adguard() {
         [[ -f "$f" ]] || continue
         sed -i '\|snippets/adguard.conf|d' "$f"
     done
-    nginx -t &>/dev/null && systemctl reload nginx
-    msg_ok "AdGuard Home removed."
+    if command -v nginx >/dev/null 2>&1 && ! nginx -t &>/dev/null; then
+        [[ "$quiet" == "quiet" ]] || msg_err "AdGuard Home удалён, но конфигурация nginx не прошла проверку."
+        return 1
+    fi
+    command -v nginx >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+    if [[ "$quiet" != "quiet" && $had_adguard -eq 1 ]]; then
+        msg_ok "AdGuard Home removed."
+    fi
 }
 install_adguard() {
     local AGH_DIR=/opt/AdGuardHome AGH_YAML=/opt/AdGuardHome/AdGuardHome.yaml
@@ -1697,7 +1802,14 @@ EOF
             sed -i '$ s|^}$|    include /etc/nginx/snippets/adguard.conf;\n}|' "$vhost"
         fi
     fi
-    nginx -t 2>&1 | grep -q successful && systemctl reload nginx
+    if ! nginx -t; then
+        msg_err "AdGuard Home настроен, но проверка nginx завершилась с ошибкой."
+        return 1
+    fi
+    systemctl reload nginx || {
+        msg_err "Конфигурация nginx корректна, но nginx не удалось перезагрузить."
+        return 1
+    }
     AGH_PATH="$agh_path"; AGH_USER="$agh_user"; AGH_PASS="$agh_pass"
     msg_ok "AdGuard Home installed."
 }
@@ -2587,7 +2699,9 @@ EOF
 # ─────────────────────────────────────────────────────────────────────────────
 show_results() {
     clear
-    if systemctl is-active --quiet x-ui; then
+    if systemctl is-active --quiet x-ui &&
+       systemctl is-active --quiet nginx &&
+       nginx -t >/dev/null 2>&1; then
         printf '0\n' | x-ui | grep --color=never -i ':'
         msg_inf "────────────────────────────────────────────────────────────────────────────────"
         HP='http'; HP="${HP}s://${domain}/${panel_path}/"
@@ -2603,10 +2717,12 @@ show_results() {
             echo
         fi
         msg_inf "Please save this screen!"
+        return 0
     else
         nginx -t
         printf '0\n' | x-ui | grep --color=never -i ':'
         msg_err "x-ui or nginx check failed. Try on a clean Linux install."
+        return 1
     fi
 }
 
@@ -2614,51 +2730,51 @@ show_results() {
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
-    choose_adguard
-    choose_rkn_guard
-    choose_xray_dns
-    choose_extra_inbounds
-    choose_webproxy_domain
-    save_firewall_state
-    clean_previous_install
-    install_packages
-    get_server_ip
-    get_ssl_certs
+    choose_adguard || return 1
+    choose_rkn_guard || return 1
+    choose_xray_dns || return 1
+    choose_extra_inbounds || return 1
+    choose_webproxy_domain || return 1
+    save_firewall_state || return 1
+    clean_previous_install || return 1
+    install_packages || return 1
+    get_server_ip || return 1
+    get_ssl_certs || return 1
     if systemctl is-active --quiet x-ui; then
-        x-ui restart
+        x-ui restart || return 1
     else
-        install_panel
+        install_panel || return 1
     fi
 
-    configure_nginx
+    configure_nginx || return 1
     if [[ "${DEPLOY_AGH}" == "1" ]]; then
-        install_adguard
+        install_adguard || return 1
     fi
-    configure_xui_db
-    install_fake_site
-    install_tproxy_site
-    tune_system
-    setup_cron
-    setup_firewall
+    configure_xui_db || return 1
+    install_fake_site || return 1
+    install_tproxy_site || return 1
+    tune_system || return 1
+    setup_cron || return 1
+    setup_firewall || return 1
     if [[ "${DEPLOY_RKN}" == "1" ]]; then
-        install_rkn_guard
+        install_rkn_guard || return 1
     fi
 
     if ! systemctl is-enabled --quiet x-ui; then
-        systemctl daemon-reload && systemctl enable x-ui.service
+        systemctl daemon-reload && systemctl enable x-ui.service || return 1
     fi
-    x-ui restart
+    x-ui restart || return 1
 
-    apply_xray_dns
-    insert_hy2_inbound
-    insert_extra_inbound
-    x-ui restart
+    apply_xray_dns || return 1
+    insert_hy2_inbound || return 1
+    insert_extra_inbound || return 1
+    x-ui restart || return 1
 
-    show_results
+    show_results || return 1
 }
 
 if [[ "${TG_WEB_PROXY_UNINSTALL}" == "y" ]]; then
-    uninstall_tg_web_proxy
+    uninstall_tg_web_proxy 1
     exit $?
 fi
 if [[ "${TG_WEB_PROXY_ONLY}" == "y" ]]; then
@@ -2675,12 +2791,15 @@ if [[ "${RKN_GUARD_ONLY}" == "y" ]]; then
 fi
 if [[ "${ADGUARD_UNINSTALL}" == "y" ]]; then
     uninstall_adguard
-    exit 0
+    exit $?
 fi
 if [[ "${ADGUARD_ONLY}" == "y" ]]; then
-    install_adguard
-    print_adguard_results
+    install_adguard || exit $?
+    print_adguard_results || exit $?
     exit 0
 fi
 
-main
+if ! main; then
+    msg_err "Установка остановлена из-за ошибки. Проверьте сообщения выше."
+    exit 1
+fi
