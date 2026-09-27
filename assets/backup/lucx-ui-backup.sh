@@ -24,6 +24,7 @@ BACKUP_PATHS=(
     /var/www/tproxy
     /root/.lucx-tg-web-proxy-info
     /var/lib/lucx-ui-preinstall
+    /etc/sysctl.d/99-lucx-ui-forwarding.conf
     /etc/default/ufw
     /etc/ufw/user.rules
     /etc/ufw/user6.rules
@@ -300,6 +301,9 @@ PY_TG_RESTORE
 
     # ── UFW ───────────────────────────────────────────────────────────────
     blue "==> Restoring UFW..."
+    if [[ -f /etc/sysctl.d/99-lucx-ui-forwarding.conf ]]; then
+        sysctl -p /etc/sysctl.d/99-lucx-ui-forwarding.conf >/dev/null 2>&1 || true
+    fi
     # user.rules were already copied by file restore.  Always allow routed
     # traffic so restored CSQTT/tunnel subnets can be forwarded through UFW.
     ufw default allow routed 2>/dev/null || true
@@ -359,6 +363,7 @@ What is backed up:
   /opt/AdGuardHome                self-hosted DoH (if installed)
   rkn-guard binary, manager, ipset/UFW state and update timers
   /var/lib/lucx-ui-preinstall     pre-install firewall snapshot
+  /etc/sysctl.d/99-lucx-ui-forwarding.conf  persistent IPv4 forwarding
   relevant services and timers from /etc/systemd/system
   /etc/default/ufw + /etc/ufw/{user,before}*.rules  firewall policy/rules
   root crontab + /etc/cron.d/
