@@ -20,8 +20,16 @@ echo
 # ─── Pre-flight checks ───────────────────────────────────────────────────────
 check_os() {
     local os_id os_version
-    os_id=$(grep -oP '(?<=^ID=).+' /etc/os-release 2>/dev/null | tr -d '"')
-    os_version=$(grep -oP '(?<=^VERSION_ID=").+(?=")' /etc/os-release 2>/dev/null)
+
+    if [[ ! -r /etc/os-release ]]; then
+        msg_err "Unable to read /etc/os-release"
+        exit 1
+    fi
+
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_version="${VERSION_ID:-}"
 
     case "${os_id}" in
         ubuntu)
@@ -2607,6 +2615,7 @@ tune_system() {
     # kernels fall back to cubic + fq_codel (or other currently supported
     # values) instead of aborting the whole installation.
     local current_cc current_qdisc available_cc selected_cc selected_qdisc qdisc
+    local active_cc active_qdisc
     current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo cubic)
     current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo fq_codel)
     available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
@@ -2689,7 +2698,19 @@ tune_system() {
     )
     mkdir -p /etc/sysctl.d
     printf '%s\n' "${params[@]}" > /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
-    sysctl -p /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
+    if ! sysctl -p /etc/sysctl.d/99-zz-lucx-ui-tuning.conf; then
+        msg_err "Failed to apply system tuning parameters."
+        return 1
+    fi
+
+    active_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    active_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || true)
+    if [[ "$active_cc" != "$selected_cc" || "$active_qdisc" != "$selected_qdisc" ]]; then
+        msg_err "TCP tuning verification failed: expected ${selected_cc} + ${selected_qdisc}, got ${active_cc:-unknown} + ${active_qdisc:-unknown}."
+        return 1
+    fi
+
+    msg_ok "TCP tuning verified: ${active_cc} + ${active_qdisc}."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
