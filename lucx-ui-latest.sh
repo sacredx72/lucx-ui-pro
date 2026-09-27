@@ -1999,7 +1999,7 @@ install_packages() {
         [[ "$version" == "20" || "$version" == "22" ]] && echo "System: Ubuntu $version"
 
         $Pak -y update
-        $Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin
+        $Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin cron
         systemctl daemon-reload && systemctl enable --now nginx
     fi
 
@@ -2753,6 +2753,15 @@ GEOUPD
 }
 
 setup_cron() {
+    # Minimal Debian/Ubuntu images may not include the `crontab` command.
+    # Install it here as a safeguard as well as in install_packages(), so this
+    # function also works during upgrades and partial/repeated installations.
+    if ! command -v crontab >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get update || return 1
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q cron || return 1
+    fi
+
+    systemctl enable --now cron 2>/dev/null || true
     crontab -l 2>/dev/null | grep -vE 'certbot|x-ui|cloudflareips|update-geodata|nginx -s reload' | crontab - || true
     install_geodata_updater
     (crontab -l 2>/dev/null; echo '0 4 * * 0 /usr/local/x-ui/update-geodata.sh >/dev/null 2>&1') | crontab -
