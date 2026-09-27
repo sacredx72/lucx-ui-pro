@@ -1851,8 +1851,8 @@ uninstall_xui() {
     uninstall_rkn_guard >/dev/null 2>&1 || true
     uninstall_adguard 2>/dev/null || true
     printf 'y\n' | x-ui uninstall >/dev/null 2>&1 || true
-    systemctl stop x-ui nginx mtr-backend AdGuardHome 2>/dev/null || true
-    systemctl disable x-ui nginx mtr-backend AdGuardHome 2>/dev/null || true
+    systemctl stop x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc 2>/dev/null || true
+    systemctl disable x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc 2>/dev/null || true
     pkill -f 'mtg-linux-' >/dev/null 2>&1 || true
     crontab -l 2>/dev/null | grep -vE 'certbot|x-ui|cloudflareips|nginx -s reload|update-geodata' | crontab - || true
     rm -rf /etc/x-ui/ /usr/local/x-ui/ /usr/local/lib/3x-ui-pro/ \
@@ -1862,6 +1862,8 @@ uninstall_xui() {
     rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service \
           /etc/systemd/system/mtr-backend.service \
           /etc/systemd/system/AdGuardHome.service \
+          /etc/systemd/system/lucx-apply-qdisc.service \
+          /usr/local/sbin/lucx-apply-qdisc \
           /etc/default/x-ui /etc/nginx/snippets/adguard.conf \
           /etc/modules-load.d/tcp-bbr.conf \
           /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
@@ -1999,7 +2001,7 @@ install_packages() {
         [[ "$version" == "20" || "$version" == "22" ]] && echo "System: Ubuntu $version"
 
         $Pak -y update
-        $Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin cron
+        $Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin cron iproute2
         systemctl daemon-reload && systemctl enable --now nginx
     fi
 
@@ -2610,6 +2612,62 @@ install_fake_site() {
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM TUNING (BBR + kernel params)
 # ─────────────────────────────────────────────────────────────────────────────
+configure_runtime_qdisc() {
+    local qdisc="$1" helper=/usr/local/sbin/lucx-apply-qdisc
+
+    # net.core.default_qdisc only affects qdiscs created after the sysctl is
+    # applied. VPS interfaces often already exist by then, so apply the chosen
+    # qdisc to every interface carrying a default route and repeat it after
+    # network-online on each boot.
+    mkdir -p /usr/local/sbin
+    cat > "$helper" <<EOF
+#!/bin/bash
+set -u
+QDISC='$qdisc'
+
+get_default_ifaces() {
+    ip -o route show default 2>/dev/null |
+        awk '{ for (i = 1; i <= NF; i++) if (\$i == "dev" && (i + 1) <= NF) { print \$(i + 1); break } }' |
+        sort -u
+}
+
+ifaces=""
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    ifaces=\$(get_default_ifaces)
+    [[ -n "\$ifaces" ]] && break
+    sleep 2
+done
+
+[[ -n "\$ifaces" ]] || exit 1
+status=0
+while IFS= read -r iface; do
+    [[ -n "\$iface" && -e "/sys/class/net/\$iface" ]] || continue
+    tc qdisc replace dev "\$iface" root "\$QDISC" || status=1
+done <<< "\$ifaces"
+exit "\$status"
+EOF
+    chmod 0755 "$helper"
+
+    cat > /etc/systemd/system/lucx-apply-qdisc.service <<'EOF'
+[Unit]
+Description=Apply LucX qdisc to default-route interfaces
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lucx-apply-qdisc
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable lucx-apply-qdisc.service >/dev/null 2>&1 || return 1
+    "$helper" || return 1
+}
+
 tune_system() {
     # Prefer BBR + fq when the kernel really supports both. On restricted VPS
     # kernels fall back to cubic + fq_codel (or other currently supported
@@ -2709,6 +2767,24 @@ tune_system() {
         msg_err "TCP tuning verification failed: expected ${selected_cc} + ${selected_qdisc}, got ${active_cc:-unknown} + ${active_qdisc:-unknown}."
         return 1
     fi
+
+    if ! configure_runtime_qdisc "$selected_qdisc"; then
+        msg_err "Failed to apply ${selected_qdisc} to the active default-route interface."
+        return 1
+    fi
+
+    local iface iface_qdisc
+    while IFS= read -r iface; do
+        [[ -n "$iface" ]] || continue
+        iface_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null |
+            awk '$4 == "root" { print $2; exit }')
+        if [[ "$iface_qdisc" != "$selected_qdisc" ]]; then
+            msg_err "Qdisc verification failed on ${iface}: expected ${selected_qdisc}, got ${iface_qdisc:-unknown}."
+            return 1
+        fi
+    done < <(ip -o route show default 2>/dev/null |
+        awk '{ for (i = 1; i <= NF; i++) if ($i == "dev" && (i + 1) <= NF) { print $(i + 1); break } }' |
+        sort -u)
 
     msg_ok "TCP tuning verified: ${active_cc} + ${active_qdisc}."
 }
