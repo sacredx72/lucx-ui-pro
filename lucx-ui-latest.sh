@@ -106,6 +106,8 @@ save_firewall_state() {
             echo 'UFW_WAS_INSTALLED=0'
             echo 'UFW_WAS_ACTIVE=0'
         fi
+        printf 'IPV4_FORWARD_WAS=%q\n' \
+            "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
     } > "${state_dir}/state"
 
     tar -cpf "${state_dir}/ufw-config.tar" \
@@ -120,7 +122,7 @@ save_firewall_state() {
 
 restore_firewall_state() {
     local state_dir="${PREINSTALL_STATE_DIR}/firewall"
-    local UFW_WAS_INSTALLED=0 UFW_WAS_ACTIVE=0
+    local UFW_WAS_INSTALLED=0 UFW_WAS_ACTIVE=0 IPV4_FORWARD_WAS=0
 
     if [[ ! -f "${state_dir}/saved" || ! -f "${state_dir}/state" ]]; then
         # Older installations did not save a snapshot. Their documented
@@ -133,6 +135,8 @@ restore_firewall_state() {
             ufw default deny routed >/dev/null 2>&1 || true
             ufw --force disable >/dev/null 2>&1 || true
         fi
+        rm -f /etc/sysctl.d/99-lucx-ui-forwarding.conf
+        sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1 || true
         msg_inf "Firewall snapshot not found; UFW reset to a clean disabled state."
         return 0
     fi
@@ -162,6 +166,9 @@ restore_firewall_state() {
     [[ -s "${state_dir}/iptables.v6" ]] && \
         command -v ip6tables-restore >/dev/null 2>&1 && \
         ip6tables-restore < "${state_dir}/iptables.v6" 2>/dev/null || true
+
+    rm -f /etc/sysctl.d/99-lucx-ui-forwarding.conf
+    sysctl -w "net.ipv4.ip_forward=${IPV4_FORWARD_WAS}" >/dev/null 2>&1 || true
 
     msg_ok "Firewall restored to its pre-install state."
 }
@@ -2525,7 +2532,12 @@ setup_cron() {
 # ─────────────────────────────────────────────────────────────────────────────
 setup_firewall() {
     ufw disable
-    # CSQTT and other tunnel subnets require forwarding through UFW.
+    # Enable kernel forwarding and UFW routed traffic for all installations,
+    # not only when a particular tunnel inbound was selected.
+    cat > /etc/sysctl.d/99-lucx-ui-forwarding.conf <<'EOF'
+net.ipv4.ip_forward=1
+EOF
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
     ufw default allow routed
     ufw allow 22/tcp
     ufw allow 80/tcp
