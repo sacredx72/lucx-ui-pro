@@ -1854,7 +1854,9 @@ uninstall_xui() {
     rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service \
           /etc/systemd/system/mtr-backend.service \
           /etc/systemd/system/AdGuardHome.service \
-          /etc/default/x-ui /etc/nginx/snippets/adguard.conf
+          /etc/default/x-ui /etc/nginx/snippets/adguard.conf \
+          /etc/modules-load.d/tcp-bbr.conf \
+          /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
     $Pak -y remove nginx nginx-common nginx-core nginx-full python3-certbot-nginx
     $Pak -y purge  nginx nginx-common nginx-core nginx-full python3-certbot-nginx
     $Pak -y autoremove
@@ -2656,10 +2658,21 @@ tune_system() {
         msg_inf "BBR is unavailable; using ${selected_cc} + ${selected_qdisc}."
     fi
 
-    # Replace values from older versions instead of keeping conflicting lines.
+    # Migrate values written by older versions out of /etc/sysctl.conf.  Some
+    # Debian images do not process that legacy file during boot, so keep all
+    # LucX tuning in a dedicated late-loading sysctl.d file.
+    touch /etc/sysctl.conf
     sed -i -E \
         -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' \
         -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' \
+        -e '/^[[:space:]]*fs\.file-max[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_timestamps[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_sack[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_window_scaling[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.core\.rmem_max[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.core\.wmem_max[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_rmem[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_wmem[[:space:]]*=/d' \
         /etc/sysctl.conf
 
     local params=(
@@ -2674,10 +2687,9 @@ tune_system() {
         "net.ipv4.tcp_rmem=4096 87380 16777216"
         "net.ipv4.tcp_wmem=4096 65536 16777216"
     )
-    for p in "${params[@]}"; do
-        grep -qxF "$p" /etc/sysctl.conf || echo "$p" >> /etc/sysctl.conf
-    done
-    sysctl -p
+    mkdir -p /etc/sysctl.d
+    printf '%s\n' "${params[@]}" > /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
+    sysctl -p /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
