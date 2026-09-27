@@ -23,6 +23,8 @@ BACKUP_PATHS=(
     /var/www/subpage
     /var/www/tproxy
     /root/.lucx-tg-web-proxy-info
+    /var/lib/lucx-ui-preinstall
+    /etc/default/ufw
     /etc/ufw/user.rules
     /etc/ufw/user6.rules
     /etc/ufw/before.rules
@@ -356,8 +358,9 @@ What is backed up:
   Telegram WEB-proxy domain, certificate and inbound (inside x-ui DB)
   /opt/AdGuardHome                self-hosted DoH (if installed)
   rkn-guard binary, manager, ipset/UFW state and update timers
+  /var/lib/lucx-ui-preinstall     pre-install firewall snapshot
   relevant services and timers from /etc/systemd/system
-  /etc/ufw/{user,before}*.rules   firewall rules
+  /etc/default/ufw + /etc/ufw/{user,before}*.rules  firewall policy/rules
   root crontab + /etc/cron.d/
 EOF
         exit 1
