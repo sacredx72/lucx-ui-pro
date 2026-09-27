@@ -2601,6 +2601,12 @@ install_fake_site() {
 # SYSTEM TUNING (BBR + kernel params)
 # ─────────────────────────────────────────────────────────────────────────────
 tune_system() {
+    # Some kernels provide BBR as a loadable module instead of loading it by
+    # default. Persist and load it before applying the existing sysctl tuning.
+    mkdir -p /etc/modules-load.d
+    echo tcp_bbr > /etc/modules-load.d/tcp-bbr.conf
+    modprobe tcp_bbr 2>/dev/null || true
+
     local params=(
         "net.core.default_qdisc=fq"
         "net.ipv4.tcp_congestion_control=bbr"
