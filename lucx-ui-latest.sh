@@ -2601,15 +2601,70 @@ install_fake_site() {
 # SYSTEM TUNING (BBR + kernel params)
 # ─────────────────────────────────────────────────────────────────────────────
 tune_system() {
-    # Some kernels provide BBR as a loadable module instead of loading it by
-    # default. Persist and load it before applying the existing sysctl tuning.
+    # Prefer BBR + fq when the kernel really supports both. On restricted VPS
+    # kernels fall back to cubic + fq_codel (or other currently supported
+    # values) instead of aborting the whole installation.
+    local current_cc current_qdisc available_cc selected_cc selected_qdisc qdisc
+    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo cubic)
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo fq_codel)
+    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+
     mkdir -p /etc/modules-load.d
     echo tcp_bbr > /etc/modules-load.d/tcp-bbr.conf
     modprobe tcp_bbr 2>/dev/null || true
+    modprobe sch_fq 2>/dev/null || true
+
+    if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr &&
+       sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 &&
+       sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+        selected_cc=bbr
+        selected_qdisc=fq
+        msg_ok "TCP tuning: BBR + fq enabled."
+    else
+        # Avoid retrying an unavailable BBR module on every boot.
+        rm -f /etc/modules-load.d/tcp-bbr.conf
+        available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+
+        if grep -qw cubic <<< "$available_cc"; then
+            selected_cc=cubic
+        elif grep -qw "$current_cc" <<< "$available_cc"; then
+            selected_cc="$current_cc"
+        else
+            selected_cc="${available_cc%% *}"
+        fi
+        [[ -n "$selected_cc" ]] || selected_cc="$current_cc"
+
+        if ! sysctl -w "net.ipv4.tcp_congestion_control=${selected_cc}" >/dev/null 2>&1; then
+            msg_err "No supported TCP congestion-control algorithm could be selected."
+            return 1
+        fi
+
+        modprobe sch_fq_codel 2>/dev/null || true
+        selected_qdisc=""
+        for qdisc in fq_codel "$current_qdisc" fq pfifo_fast; do
+            [[ -n "$qdisc" ]] || continue
+            if sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null 2>&1; then
+                selected_qdisc="$qdisc"
+                break
+            fi
+        done
+        if [[ -z "$selected_qdisc" ]]; then
+            msg_err "No supported default qdisc could be selected."
+            return 1
+        fi
+
+        msg_inf "BBR is unavailable; using ${selected_cc} + ${selected_qdisc}."
+    fi
+
+    # Replace values from older versions instead of keeping conflicting lines.
+    sed -i -E \
+        -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' \
+        /etc/sysctl.conf
 
     local params=(
-        "net.core.default_qdisc=fq"
-        "net.ipv4.tcp_congestion_control=bbr"
+        "net.core.default_qdisc=${selected_qdisc}"
+        "net.ipv4.tcp_congestion_control=${selected_cc}"
         "fs.file-max=2097152"
         "net.ipv4.tcp_timestamps=1"
         "net.ipv4.tcp_sack=1"
