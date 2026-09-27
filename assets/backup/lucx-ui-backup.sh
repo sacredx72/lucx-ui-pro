@@ -25,6 +25,8 @@ BACKUP_PATHS=(
     /root/.lucx-tg-web-proxy-info
     /var/lib/lucx-ui-preinstall
     /etc/sysctl.d/99-lucx-ui-forwarding.conf
+    /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
+    /etc/modules-load.d/tcp-bbr.conf
     /etc/default/ufw
     /etc/ufw/user.rules
     /etc/ufw/user6.rules
@@ -303,6 +305,12 @@ PY_TG_RESTORE
     blue "==> Restoring UFW..."
     if [[ -f /etc/sysctl.d/99-lucx-ui-forwarding.conf ]]; then
         sysctl -p /etc/sysctl.d/99-lucx-ui-forwarding.conf >/dev/null 2>&1 || true
+    fi
+    if [[ -f /etc/sysctl.d/99-zz-lucx-ui-tuning.conf ]]; then
+        modprobe tcp_bbr >/dev/null 2>&1 || true
+        modprobe sch_fq >/dev/null 2>&1 || true
+        modprobe sch_fq_codel >/dev/null 2>&1 || true
+        sysctl -p /etc/sysctl.d/99-zz-lucx-ui-tuning.conf >/dev/null 2>&1 || true
     fi
     # user.rules were already copied by file restore.  Always allow routed
     # traffic so restored CSQTT/tunnel subnets can be forwarded through UFW.
