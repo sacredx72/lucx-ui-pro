@@ -1428,21 +1428,24 @@ choose_rkn_guard() {
         echo
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
         msg_inf 'Установить ли rkn-guard с защитой от сканеров подсетей?'
-        echo '  1) Да'
-        echo '  2) Нет'
+        echo '  1) Да (обновлять списки)'
+        echo '  2) Да (обновлять списки и программу)'
+        echo '  3) Нет'
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
-        echo -en 'Выбор [1-2]: '
+        echo -en 'Выбор [1-3]: '
         if [[ -n "$tty" ]]; then read -r ans <"$tty" || ans=""; else read -r ans || ans=""; fi
         mapped=$(echo "$ans" | tr -d '[:space:]')
         case "$mapped" in
             1) DEPLOY_RKN="1"; break ;;
             2) DEPLOY_RKN="2"; break ;;
+            3) DEPLOY_RKN="3"; break ;;
         esac
     done
     echo
 }
 
 install_rkn_guard_auto_updates() {
+    local update_mode="${1:-2}"
     local update_dir="/usr/local/lib/lucx-ui-pro"
     mkdir -p "$update_dir"
 
@@ -1456,7 +1459,8 @@ exec rkn-guard update \
   -u https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public/skipa.list
 RKN_LIST_UPDATE
 
-    cat > "${update_dir}/rkn-guard-self-update.sh" <<'RKN_SELF_UPDATE'
+    if [[ "$update_mode" == "2" ]]; then
+        cat > "${update_dir}/rkn-guard-self-update.sh" <<'RKN_SELF_UPDATE'
 #!/usr/bin/env bash
 set -euo pipefail
 command -v rkn-guard >/dev/null 2>&1 || exit 0
@@ -1481,7 +1485,14 @@ chmod 755 /opt/rkn-guard-manager.sh
 printf '%s\n' '#!/usr/bin/env bash' 'exec /opt/rkn-guard-manager.sh "$@"' > /usr/local/bin/rkn
 chmod 755 /usr/local/bin/rkn
 RKN_SELF_UPDATE
-    chmod 755 "${update_dir}/rkn-guard-list-update.sh" "${update_dir}/rkn-guard-self-update.sh"
+        chmod 755 "${update_dir}/rkn-guard-self-update.sh"
+    else
+        systemctl disable --now rkn-guard-self-update.timer 2>/dev/null || true
+        rm -f "${update_dir}/rkn-guard-self-update.sh" \
+              /etc/systemd/system/rkn-guard-self-update.service \
+              /etc/systemd/system/rkn-guard-self-update.timer
+    fi
+    chmod 755 "${update_dir}/rkn-guard-list-update.sh"
 
     cat > /etc/systemd/system/rkn-guard-list-update.service <<EOF
 [Unit]
@@ -1506,7 +1517,8 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-    cat > /etc/systemd/system/rkn-guard-self-update.service <<EOF
+    if [[ "$update_mode" == "2" ]]; then
+        cat > /etc/systemd/system/rkn-guard-self-update.service <<EOF
 [Unit]
 Description=Update rkn-guard when a new release is available
 After=network-online.target
@@ -1516,7 +1528,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=${update_dir}/rkn-guard-self-update.sh
 EOF
-    cat > /etc/systemd/system/rkn-guard-self-update.timer <<'EOF'
+        cat > /etc/systemd/system/rkn-guard-self-update.timer <<'EOF'
 [Unit]
 Description=Periodic rkn-guard release check
 
@@ -1529,11 +1541,16 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+    fi
     systemctl daemon-reload
-    systemctl enable --now rkn-guard-list-update.timer rkn-guard-self-update.timer
+    systemctl enable --now rkn-guard-list-update.timer
+    if [[ "$update_mode" == "2" ]]; then
+        systemctl enable --now rkn-guard-self-update.timer
+    fi
 }
 
 install_rkn_guard() {
+    local update_mode="${1:-2}"
     local installer
     if command -v rkn-guard >/dev/null 2>&1; then
         msg_inf "rkn-guard уже установлен — сначала выполняется полное удаление."
@@ -1557,8 +1574,12 @@ install_rkn_guard() {
     fi
     rm -f "$installer"
     command -v rkn-guard >/dev/null 2>&1 || { msg_err "rkn-guard не найден после установки."; return 1; }
-    install_rkn_guard_auto_updates || return 1
-    msg_ok "rkn-guard установлен; автообновление баз и программы включено."
+    install_rkn_guard_auto_updates "$update_mode" || return 1
+    if [[ "$update_mode" == "1" ]]; then
+        msg_ok "rkn-guard установлен; автообновление списков включено, автообновление программы отключено."
+    else
+        msg_ok "rkn-guard установлен; автообновление списков и программы включено."
+    fi
 }
 
 cleanup_rkn_guard_fallback() {
@@ -2935,8 +2956,8 @@ main() {
     tune_system || return 1
     setup_cron || return 1
     setup_firewall || return 1
-    if [[ "${DEPLOY_RKN}" == "1" ]]; then
-        install_rkn_guard || return 1
+    if [[ "${DEPLOY_RKN}" == "1" || "${DEPLOY_RKN}" == "2" ]]; then
+        install_rkn_guard "${DEPLOY_RKN}" || return 1
     fi
 
     if ! systemctl is-enabled --quiet x-ui; then
