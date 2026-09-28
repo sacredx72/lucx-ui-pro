@@ -3019,8 +3019,17 @@ if [[ "${RKN_GUARD_UNINSTALL}" == "y" ]]; then
     exit $?
 fi
 if [[ "${RKN_GUARD_ONLY}" == "y" ]]; then
-    install_rkn_guard
-    exit $?
+    choose_rkn_guard || exit $?
+    case "${DEPLOY_RKN}" in
+        1|2)
+            install_rkn_guard "${DEPLOY_RKN}"
+            exit $?
+            ;;
+        3)
+            msg_inf "Установка rkn-guard отменена."
+            exit 0
+            ;;
+    esac
 fi
 if [[ "${ADGUARD_UNINSTALL}" == "y" ]]; then
     uninstall_adguard
