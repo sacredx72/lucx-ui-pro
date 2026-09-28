@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 
 BACKUP_STORE="/var/backups/x-ui"
-PACKAGES="nginx-full certbot python3 sqlite3 curl wget jq ufw mtr-tiny ipset iptables-persistent rsyslog whois"
+PACKAGES="nginx-full certbot python3 sqlite3 curl wget jq ufw mtr-tiny ipset iptables-persistent rsyslog whois cron iproute2 libcap2-bin netcat-openbsd"
 
 # ── paths to back up ──────────────────────────────────────────────────────────
 BACKUP_PATHS=(
@@ -16,6 +16,8 @@ BACKUP_PATHS=(
     /usr/local/x-ui
     /usr/bin/x-ui
     /usr/local/lib/3x-ui-pro
+    /usr/local/lib/lucx-ui-pro
+    /usr/local/sbin/lucx-apply-qdisc
     /etc/letsencrypt
     /root/cert
     /var/www/html
@@ -45,6 +47,7 @@ BACKUP_PATHS=(
 )
 SYSTEMD_UNITS=(
     x-ui.service mtr-backend.service AdGuardHome.service
+    lucx-apply-qdisc.service
     antiscan-ipset-restore.service antiscan-move-rules.service
     antiscan-aggregate.service antiscan-aggregate.timer
     rkn-guard-list-update.service rkn-guard-list-update.timer
@@ -201,6 +204,7 @@ cmd_restore() {
     [[ -f /usr/local/bin/rkn-guard ]] && chmod +x /usr/local/bin/rkn-guard
     [[ -f /usr/local/bin/rkn ]]       && chmod +x /usr/local/bin/rkn
     [[ -f /opt/rkn-guard-manager.sh ]] && chmod +x /opt/rkn-guard-manager.sh
+    [[ -f /usr/local/sbin/lucx-apply-qdisc ]] && chmod +x /usr/local/sbin/lucx-apply-qdisc
     find /usr/local/lib/3x-ui-pro -name "*.py" -exec chmod +x {} \; 2>/dev/null || true
     find /usr/local/lib/lucx-ui-pro -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 
@@ -261,7 +265,7 @@ PY_TG_RESTORE
     blue "==> Enabling and starting services..."
     systemctl daemon-reload
 
-    for svc in x-ui mtr-backend AdGuardHome; do
+    for svc in x-ui mtr-backend AdGuardHome lucx-apply-qdisc; do
         systemctl enable "${svc}" 2>/dev/null || true
         systemctl start  "${svc}" 2>/dev/null || true
     done
@@ -364,6 +368,8 @@ What is backed up:
   /usr/local/x-ui                 panel binary + xray core
   /usr/bin/x-ui                   x-ui management CLI
   /usr/local/lib/3x-ui-pro        optional helper scripts
+  /usr/local/lib/lucx-ui-pro      rkn-guard automatic-update scripts
+  /usr/local/sbin/lucx-apply-qdisc  network qdisc helper
   /etc/letsencrypt                SSL certificates
   /root/cert                      panel cert symlinks
   /var/www/{html,diagnostics,subpage,tproxy}  web content
