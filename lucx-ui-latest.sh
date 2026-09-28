@@ -847,20 +847,22 @@ choose_webproxy_domain() {
 }
 install_tproxy_site() {
     [[ "${DEPLOY_TPROXY}" == "1" ]] || return 0
-    local idx site_id url tries=0 copied=0
-    mkdir -p /var/www/tproxy
-    while (( tries < 8 )); do
+    local idx site_id url tries=0
+    mkdir -p /var/www/html
+
+    # Panel, Reality and Telegram WEB-proxy use the same cover directory.
+    while [[ ! -s /var/www/html/index.html ]] && (( tries < 8 )); do
         tries=$((tries + 1)); idx=$(( (RANDOM % FAKE_SITE_COUNT) + 1 ))
         site_id=$(printf "site-%02d" "$idx")
         url="${GITHUB_RAW}/assets/fake-sites/${site_id}/index.html"
-        if curl -fsSL "$url" -o /var/www/tproxy/index.html && [[ -s /var/www/tproxy/index.html ]]; then copied=1; break; fi
+        curl -fsSL "$url" -o /var/www/html/index.html || rm -f /var/www/html/index.html
     done
-    if [[ "$copied" -ne 1 && -s /var/www/html/index.html ]]; then cp -f /var/www/html/index.html /var/www/tproxy/index.html; copied=1; fi
-    if [[ ! -s /var/www/tproxy/index.html ]]; then printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title></title></head><body></body></html>' > /var/www/tproxy/index.html; fi
-    [[ -s /var/www/tproxy/index.html ]] || { msg_err "Не удалось создать /var/www/tproxy/index.html"; return 1; }
-    chown -R www-data:www-data /var/www/tproxy 2>/dev/null || true
-    chmod 644 /var/www/tproxy/index.html
-    msg_ok "WEB-proxy camouflage installed in /var/www/tproxy."
+    if [[ ! -s /var/www/html/index.html ]]; then printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title></title></head><body></body></html>' > /var/www/html/index.html; fi
+    [[ -s /var/www/html/index.html ]] || { msg_err "Не удалось создать /var/www/html/index.html"; return 1; }
+    rm -rf /var/www/tproxy
+    chown -R www-data:www-data /var/www/html 2>/dev/null || true
+    chmod 644 /var/www/html/index.html
+    msg_ok "WEB-proxy uses shared camouflage from /var/www/html."
 }
 insert_tproxy_inbound() {
     [[ "${DEPLOY_TPROXY}" == "1" && -n "${webproxy_domain}" ]] || return 0
@@ -881,7 +883,7 @@ insert_tproxy_inbound() {
 import json, sqlite3, sys
 db, hostname, secret, cert, key, flag = sys.argv[1:7]
 remark = ("%s web-proxy" % flag).strip()
-settings = {"clients": [], "port": 11443, "hostname": hostname, "secret": secret, "siteSource": "dir", "siteDir": "/var/www/tproxy", "siteUpstream": "", "carrierMode": "https", "certFile": cert, "keyFile": key, "externalTLS": False, "behindCover": False, "routeThroughXray": False, "outboundTag": "", "routeXrayPort": 0}
+settings = {"clients": [], "port": 11443, "hostname": hostname, "secret": secret, "siteSource": "dir", "siteDir": "/var/www/html", "siteUpstream": "", "carrierMode": "https", "certFile": cert, "keyFile": key, "externalTLS": False, "behindCover": False, "routeThroughXray": False, "outboundTag": "", "routeXrayPort": 0}
 stream = {"security": "none"}
 sniffing = {"enabled": True, "destOverride": ["http", "tls", "quic", "fakedns"], "metadataOnly": False, "routeOnly": False}
 tag = "inbound-tproxy"
@@ -1428,7 +1430,6 @@ install_base_dependencies() {
         return 1
     fi
 
-    msg_inf "Обновление списка пакетов и установка базовых зависимостей..."
     if ! apt-get update; then
         msg_err "Не удалось обновить список пакетов APT. Проверьте репозитории и сетевое подключение."
         return 1
@@ -1447,7 +1448,6 @@ install_base_dependencies() {
     done
 
     BASE_DEPENDENCIES_READY="1"
-    msg_ok "Базовые зависимости установлены."
 }
 
 choose_rkn_guard() {
@@ -2962,12 +2962,14 @@ show_results() {
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
-    install_base_dependencies || return 1
     choose_adguard || return 1
     choose_rkn_guard || return 1
     choose_xray_dns || return 1
     choose_extra_inbounds || return 1
     choose_webproxy_domain || return 1
+
+    # Install base packages only after all initial questions are answered.
+    install_base_dependencies || return 1
     save_firewall_state || return 1
     clean_previous_install || return 1
     install_packages || return 1
