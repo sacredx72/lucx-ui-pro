@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 
 BACKUP_STORE="/var/backups/x-ui"
-PACKAGES="nginx-full certbot python3 sqlite3 curl wget jq ufw mtr-tiny ipset iptables-persistent rsyslog whois cron iproute2 libcap2-bin netcat-openbsd"
+PACKAGES="ca-certificates curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin cron iproute2 ipset iptables rsyslog whois"
 
 # ── paths to back up ──────────────────────────────────────────────────────────
 BACKUP_PATHS=(
@@ -23,7 +23,6 @@ BACKUP_PATHS=(
     /var/www/html
     /var/www/diagnostics
     /var/www/subpage
-    /var/www/tproxy
     /root/.lucx-tg-web-proxy-info
     /var/lib/lucx-ui-preinstall
     /etc/sysctl.d/99-lucx-ui-forwarding.conf
@@ -40,6 +39,7 @@ BACKUP_PATHS=(
     /etc/logrotate.d/iptables-scanners
     /usr/local/bin/rkn-guard
     /usr/local/bin/rkn
+    /usr/local/bin/antiscan-aggregate-logs.sh
     /opt/rkn-guard-manager.sh
     /opt/rkn-guard-manual.list
     /opt/AdGuardHome
@@ -198,11 +198,11 @@ cmd_restore() {
     chown -R www-data:www-data /var/www/html        2>/dev/null || true
     chown -R www-data:www-data /var/www/diagnostics 2>/dev/null || true
     chown -R www-data:www-data /var/www/subpage     2>/dev/null || true
-    chown -R www-data:www-data /var/www/tproxy      2>/dev/null || true
     [[ -f /usr/local/x-ui/x-ui ]] && chmod +x /usr/local/x-ui/x-ui
     [[ -f /usr/bin/x-ui ]]        && chmod +x /usr/bin/x-ui
     [[ -f /usr/local/bin/rkn-guard ]] && chmod +x /usr/local/bin/rkn-guard
     [[ -f /usr/local/bin/rkn ]]       && chmod +x /usr/local/bin/rkn
+    [[ -f /usr/local/bin/antiscan-aggregate-logs.sh ]] && chmod +x /usr/local/bin/antiscan-aggregate-logs.sh
     [[ -f /opt/rkn-guard-manager.sh ]] && chmod +x /opt/rkn-guard-manager.sh
     [[ -f /usr/local/sbin/lucx-apply-qdisc ]] && chmod +x /usr/local/sbin/lucx-apply-qdisc
     find /usr/local/lib/3x-ui-pro -name "*.py" -exec chmod +x {} \; 2>/dev/null || true
@@ -240,12 +240,17 @@ cmd_restore() {
 import json, sqlite3, sys
 try:
     con = sqlite3.connect(sys.argv[1], timeout=10)
-    rows = con.execute("SELECT settings FROM inbounds WHERE protocol='tproxy' OR tag='inbound-tproxy'").fetchall()
-    con.close()
-    for (raw,) in rows:
-        host = json.loads(raw or "{}").get("hostname", "")
+    rows = con.execute("SELECT id, settings FROM inbounds WHERE protocol='tproxy' OR tag='inbound-tproxy'").fetchall()
+    for inbound_id, raw in rows:
+        value = json.loads(raw or "{}")
+        value["siteSource"] = "dir"
+        value["siteDir"] = "/var/www/html"
+        con.execute("UPDATE inbounds SET settings=? WHERE id=?", (json.dumps(value, ensure_ascii=False), inbound_id))
+        host = value.get("hostname", "")
         if host:
             print(host)
+    con.commit()
+    con.close()
 except Exception:
     pass
 PY_TG_RESTORE
@@ -372,7 +377,7 @@ What is backed up:
   /usr/local/sbin/lucx-apply-qdisc  network qdisc helper
   /etc/letsencrypt                SSL certificates
   /root/cert                      panel cert symlinks
-  /var/www/{html,diagnostics,subpage,tproxy}  web content
+  /var/www/{html,diagnostics,subpage}  web content (shared cover in html)
   Telegram WEB-proxy domain, certificate and inbound (inside x-ui DB)
   /opt/AdGuardHome                self-hosted DoH (if installed)
   rkn-guard binary, manager, ipset/UFW state and update timers
