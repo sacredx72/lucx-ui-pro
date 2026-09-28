@@ -92,6 +92,7 @@ RKN_GUARD_UNINSTALL=""
 TG_WEB_PROXY_ONLY=""
 TG_WEB_PROXY_UNINSTALL=""
 DEPLOY_RKN=""
+BASE_DEPENDENCIES_READY="0"
 CUSTOM_DOH_URL=""
 CUSTOM_DOH_HOST=""
 CUSTOM_DOH_IP=""
@@ -1419,6 +1420,36 @@ choose_adguard() {
     done
     echo
 }
+install_base_dependencies() {
+    [[ "${BASE_DEPENDENCIES_READY}" == "1" ]] && return 0
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        msg_err "Для установки требуется Debian/Ubuntu с пакетным менеджером apt."
+        return 1
+    fi
+
+    msg_inf "Обновление списка пакетов и установка базовых зависимостей..."
+    if ! apt-get update; then
+        msg_err "Не удалось обновить список пакетов APT. Проверьте репозитории и сетевое подключение."
+        return 1
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        ca-certificates curl ipset iptables; then
+        msg_err "Не удалось установить базовые зависимости: ca-certificates, curl, ipset, iptables."
+        return 1
+    fi
+
+    for dependency in curl ipset iptables; do
+        if ! command -v "$dependency" >/dev/null 2>&1; then
+            msg_err "Зависимость ${dependency} не найдена после установки."
+            return 1
+        fi
+    done
+
+    BASE_DEPENDENCIES_READY="1"
+    msg_ok "Базовые зависимости установлены."
+}
+
 choose_rkn_guard() {
     local ans mapped tty
     DEPLOY_RKN=""
@@ -1552,6 +1583,7 @@ EOF
 install_rkn_guard() {
     local update_mode="${1:-2}"
     local installer
+    install_base_dependencies || return 1
     if command -v rkn-guard >/dev/null 2>&1; then
         msg_inf "rkn-guard уже установлен — сначала выполняется полное удаление."
         uninstall_rkn_guard || return 1
@@ -2930,6 +2962,7 @@ show_results() {
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
+    install_base_dependencies || return 1
     choose_adguard || return 1
     choose_rkn_guard || return 1
     choose_xray_dns || return 1
