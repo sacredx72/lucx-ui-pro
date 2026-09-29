@@ -3053,7 +3053,6 @@ allow-lan: true
 tcp-concurrent: true
 enable-process: true
 find-process-mode: always
-global-client-fingerprint: chrome
 
 profile:
   store-selected: true
@@ -3100,11 +3099,13 @@ dns:
 proxy-providers:
   sub:
     type: http
+    proxy: DIRECT
     url: https://${DOMAIN}/${SUB_PATH}/${SUB_ID}?provider=1
-    path: ./proxy_providers/base64.yml
+    path: ./proxy_providers/${DOMAIN}_${SUB_PATH}_${SUB_ID}.yaml
     interval: 3600
     override:
       override-expr:
+        - '(select(.type == "vless" and .["reality-opts"] != null) | .["client-fingerprint"]) = "chrome"'
         - '(select(.type == "vless" and .["reality-opts"] != null) | .["reality-opts"]["support-x25519mlkem768"]) = true'
     health-check:
       enable: true
@@ -4065,9 +4066,6 @@ show_results() {
         msg_inf "X-UI Secure Panel: ${HP}\n"
         echo -e "Username:  ${config_username}\n"
         echo -e "Password:  ${config_password}\n"
-        msg_inf "Clash/Mihomo: используйте ссылку подписки клиента из панели."
-        echo "Формат: https://${domain}/${sub_path}/<subId>"
-        echo
         msg_inf "────────────────────────────────────────────────────────────────────────────────"
         print_adguard_results
         if [[ "${DEPLOY_TPROXY}" == "1" && -n "${webproxy_domain}" && -n "${TPROXY_SECRET}" ]]; then
