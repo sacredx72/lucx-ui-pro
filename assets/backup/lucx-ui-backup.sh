@@ -21,6 +21,7 @@ BACKUP_PATHS=(
     /usr/bin/x-ui
     /usr/local/lib/3x-ui-pro
     /usr/local/lib/lucx-ui-pro
+    /etc/systemd/system/lucx-clash-sub.service
     /usr/local/sbin/lucx-apply-qdisc
     /usr/local/sbin/lucx-awg-sysctl-guard
     /etc/systemd/system/lucx-qdisc-sync.service
@@ -61,7 +62,7 @@ BACKUP_PATHS=(
     /root/.lucx-adguard-info
 )
 SYSTEMD_UNITS=(
-    x-ui.service mtr-backend.service AdGuardHome.service fail2ban.service
+    x-ui.service mtr-backend.service lucx-clash-sub.service AdGuardHome.service fail2ban.service
     lucx-apply-qdisc.service
     lucx-qdisc-sync.service lucx-qdisc-sync.path
     lucx-awg-sysctl-guard.service lucx-awg-sysctl-guard.path
@@ -123,7 +124,7 @@ cmd_backup() {
     # estimate size and verify free space before touching anything:
     # staging holds an uncompressed copy, the archive lands next to it
     local est_kb need_kb have_kb
-    est_kb=$(du -skc "${BACKUP_PATHS[@]}" 2>/dev/null | awk 'END {print $1}')
+    est_kb=$(du -skc "${BACKUP_PATHS[@]}" 2>/dev/null | awk 'END {print $1}' || true)
     need_kb=$(( est_kb * 2 + 102400 ))   # copy + archive + 100 MB margin
     install -d -m 0700 "${BACKUP_STORE}"
     have_kb=$(avail_kb "${BACKUP_STORE}")
@@ -148,7 +149,7 @@ cmd_backup() {
 
     : > "${staging}/services-state"
     local svc enabled active
-    for svc in x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync.path \
+    for svc in x-ui nginx lucx-clash-sub AdGuardHome mtr-backend lucx-apply-qdisc lucx-qdisc-sync.path \
                lucx-awg-sysctl-guard.path antiscan-ipset-restore.service \
                antiscan-move-rules.service antiscan-aggregate.timer \
                rkn-guard-list-update.timer rkn-guard-self-update.timer; do
@@ -188,7 +189,7 @@ cmd_backup() {
 
     # ── metadata ──────────────────────────────────────────────────────────
     local xui_ver awg_installed
-    xui_ver=$(x-ui version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "unknown")
+    xui_ver=$(/usr/local/x-ui/x-ui -v 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "unknown")
     if modinfo amneziawg >/dev/null 2>&1 || [[ -f /etc/modules-load.d/amneziawg.conf ]] || [[ -f /etc/x-ui/.awg-module-version ]]; then
         awg_installed=1
     else
@@ -408,9 +409,12 @@ try:
             seen.add(norm)
             assert m.isfile() or m.isdir() or m.issym()
             assert m.size <= 16 * 1024**3
+            allowed_file = norm.startswith('files/') and any(
+                norm[6:] == p or norm[6:].startswith(p + '/') for p in allowed)
+            allowed_parent = m.isdir() and norm.startswith('files/') and any(
+                p.startswith(norm[6:] + '/') for p in allowed)
             assert norm in ('', 'files', 'meta.json', 'root-crontab', 'cron.d', 'services-state', 'ufw-state') or \
-                norm.startswith('cron.d/') or \
-                (norm.startswith('files/') and any(norm[6:] == p or norm[6:].startswith(p + '/') for p in allowed))
+                norm.startswith('cron.d/') or allowed_file or allowed_parent
             if m.issym():
                 links.add(norm)
         assert all(not any(n.startswith(link + '/') for link in links) for n in seen)
@@ -477,7 +481,7 @@ PY_META_AWG
 
     # ── stop running services ─────────────────────────────────────────────
     blue "==> Stopping services..."
-    for svc in nginx x-ui mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync lucx-qdisc-sync.path lucx-awg-sysctl-guard lucx-awg-sysctl-guard.path; do
+    for svc in nginx x-ui lucx-clash-sub mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync lucx-qdisc-sync.path lucx-awg-sysctl-guard lucx-awg-sysctl-guard.path; do
         systemctl stop "${svc}" 2>/dev/null || true
     done
 
@@ -494,10 +498,58 @@ PY_META_AWG
                 mv "${staging}/files/${cert_path}" "${staging}/saved-certs/${cert_path}"
             fi
         done
-        cp -a "${staging}/files/." /
-        # Fill missing entries from the archive, retaining every certificate
-        # and renewal file that already exists on this server.
-        cp -an "${staging}/saved-certs/." /
+        # The staging tree is created under umask 077. Copying files/. as a
+        # whole would also apply its 0700 parent-directory modes to /etc,
+        # /var, /usr and /var/www. Restore only the paths actually backed up.
+        local path src parent unit
+        for path in "${BACKUP_PATHS[@]}"; do
+            src="${staging}/files${path}"
+            [[ -e "$src" || -L "$src" ]] || continue
+            parent=$(dirname "$path")
+            [[ -d "$parent" ]] || install -d -m 0755 "$parent"
+            if [[ -d "$src" && ! -L "$src" ]]; then
+                [[ -d "$path" ]] || install -d -m 0755 "$path"
+                cp -a "$src/." "$path/"
+                chown --reference="$src" "$path"
+                chmod --reference="$src" "$path"
+            else
+                cp -a --remove-destination "$src" "$path"
+            fi
+        done
+        # Unit files are collected separately from BACKUP_PATHS.
+        [[ -d /etc/systemd/system ]] || install -d -m 0755 /etc/systemd/system
+        for unit in "${SYSTEMD_UNITS[@]}"; do
+            src="${staging}/files/etc/systemd/system/${unit}"
+            if [[ -f "$src" ]]; then
+                cp -a --remove-destination "$src" "/etc/systemd/system/${unit}"
+            fi
+        done
+        # Fill missing certificate entries without changing existing renewed
+        # certificates or the modes of their parent directories.
+        local cert_dest cert_mode cert_owner existed
+        for cert_path in etc/letsencrypt var/lib/letsencrypt var/log/letsencrypt root/cert; do
+            src="${staging}/saved-certs/${cert_path}"
+            [[ -d "$src" ]] || continue
+            cert_dest="/${cert_path}"
+            parent=$(dirname "$cert_dest")
+            [[ -d "$parent" ]] || install -d -m 0755 "$parent"
+            existed=0
+            if [[ -d "$cert_dest" ]]; then
+                existed=1
+                cert_mode=$(stat -c '%a' "$cert_dest")
+                cert_owner=$(stat -c '%u:%g' "$cert_dest")
+            else
+                install -d -m 0700 "$cert_dest"
+            fi
+            cp -an "$src/." "$cert_dest/"
+            if (( existed )); then
+                chown "$cert_owner" "$cert_dest"
+                chmod "$cert_mode" "$cert_dest"
+            else
+                chown --reference="$src" "$cert_dest"
+                chmod --reference="$src" "$cert_dest"
+            fi
+        done
     fi
 
     # ── permissions ───────────────────────────────────────────────────────
@@ -612,7 +664,13 @@ PY_TG_RESTORE
     restore_unit_state() {
         local unit="$1" saved_en saved_active
         if [[ -f "${staging}/services-state" ]]; then
-            read -r saved_en saved_active < <(awk -v u="$unit" '$1==u {print $2, $3; exit}' "${staging}/services-state")
+            if ! read -r saved_en saved_active < <(awk -v u="$unit" -v base="${unit%.service}" \
+                '$1==u || $1==base {print $2, $3; exit}' "${staging}/services-state"); then
+                # Older archives may omit a service they still contain.
+                systemctl enable "$unit" 2>/dev/null || true
+                systemctl start "$unit" 2>/dev/null || true
+                return 0
+            fi
             [[ "$saved_en" == 1 ]] && systemctl enable "$unit" 2>/dev/null || systemctl disable "$unit" 2>/dev/null || true
             [[ "$saved_active" == 1 ]] && systemctl start "$unit" 2>/dev/null || systemctl stop "$unit" 2>/dev/null || true
         else
@@ -628,6 +686,11 @@ PY_TG_RESTORE
     for svc in x-ui mtr-backend AdGuardHome lucx-apply-qdisc; do
         restore_unit_state "$svc"
     done
+    if [[ -f /etc/systemd/system/lucx-clash-sub.service &&
+          -f /usr/local/lib/lucx-ui-pro/clash-sub-server.py &&
+          -f /var/www/subpage/clash.yaml.tpl ]]; then
+        restore_unit_state lucx-clash-sub.service
+    fi
     if [[ -f /etc/systemd/system/lucx-qdisc-sync.path ]]; then
         restore_unit_state lucx-qdisc-sync.path
     fi
@@ -714,6 +777,24 @@ PY_TG_RESTORE
         ufw --force enable 2>/dev/null || true
     fi
     green "    UFW state restored"
+
+    local required_service saved_active
+    for required_service in x-ui nginx lucx-clash-sub AdGuardHome; do
+        saved_active=$(awk -v u="$required_service" '$1==u {print $3; exit}' "${staging}/services-state" 2>/dev/null || true)
+        if [[ "$saved_active" == 1 ]] && ! systemctl is-active --quiet "$required_service"; then
+            die "Restored service is inactive: ${required_service}"
+        fi
+    done
+    if [[ -f /var/www/subpage/clash.yaml.tpl ]] &&
+       ! runuser -u www-data -- test -r /var/www/subpage/clash.yaml.tpl; then
+        die "Clash subscription template is unreadable by www-data"
+    fi
+    if [[ -f /etc/systemd/system/lucx-clash-sub.service &&
+          -f /usr/local/lib/lucx-ui-pro/clash-sub-server.py &&
+          -f /var/www/subpage/clash.yaml.tpl ]] &&
+       ! systemctl is-active --quiet lucx-clash-sub; then
+        die "Clash subscription service is inactive after restore"
+    fi
 
     echo
     green "==> Restore complete."
