@@ -321,6 +321,8 @@ make_port() {
 # ─── Generate ports & paths (done once at startup) ───────────────────────────
 sub_port=$(make_port)
 panel_port=$(make_port)
+clash_port=$(make_port)
+while [[ "$clash_port" == "$sub_port" || "$clash_port" == "$panel_port" ]]; do clash_port=$(make_port); done
 hy2_port=""
 
 sub_path=$(gen_random_string 10)
@@ -404,7 +406,7 @@ choose_amneziawg() {
     # In a non-interactive stdin-only invocation there is no safe way to ask.
     # Preserve the historical non-interactive behaviour: install AWG unless
     # an explicit interactive menu choice is available.
-    if [[ ! -r /dev/tty ]]; then
+    if [[ ! -t 0 || ! -r /dev/tty ]]; then
         DEPLOY_AWG="y"
         return 0
     fi
@@ -525,7 +527,7 @@ PY
 choose_xray_dns() {
     local ans mapped tty doh_url resolved host ip
     DNS_CHOICE=""; CUSTOM_DOH_URL=""; CUSTOM_DOH_HOST=""; CUSTOM_DOH_IP=""
-    tty="/dev/tty"; [[ -r /dev/tty ]] || tty=""
+    tty="/dev/tty"; [[ -t 0 && -r /dev/tty ]] || tty=""
     while true; do
         echo
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
@@ -691,7 +693,7 @@ apply_xray_dns() { apply_xray_template; }
 choose_hy2_port() {
     local p tty
     tty="/dev/tty"
-    [[ -r /dev/tty ]] || tty=""
+    [[ -t 0 && -r /dev/tty ]] || tty=""
     hy2_port=""
     while true; do
         echo
@@ -731,7 +733,7 @@ choose_extra_inbounds() {
     DEPLOY_HY2="2"; DEPLOY_QWDTT=""; DEPLOY_CSQTT=""; DEPLOY_TPROXY=""
     hy2_port=""; webproxy_domain=""; TPROXY_SECRET=""
     arch=$(uname -m)
-    tty="/dev/tty"; [[ -r /dev/tty ]] || tty=""
+    tty="/dev/tty"; [[ -t 0 && -r /dev/tty ]] || tty=""
     while true; do
         echo
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
@@ -912,7 +914,7 @@ PY
 }
 read_tty_line() {
     local tty="/dev/tty" ans=""
-    [[ -r /dev/tty ]] || tty=""
+    [[ -t 0 && -r /dev/tty ]] || tty=""
     # Readline (-e) keeps pasted text and terminal wrapping in sync.  The long
     # description is printed on its own line, so only the short marker wraps.
     if [[ -n "$tty" ]]; then
@@ -928,8 +930,8 @@ read_tty_line() {
     ans="${ans%"${ans##*[!$' \t']}"}"
     REPLY="$ans"
 }
-ui() { if [[ -w /dev/tty ]]; then printf '%s' "$1" >/dev/tty; else printf '%s' "$1" >&2; fi; }
-ui_err() { if [[ -w /dev/tty ]]; then msg_err "$1" >/dev/tty; else msg_err "$1" >&2; fi; }
+ui() { if [[ -t 0 && -w /dev/tty ]]; then printf '%s' "$1" >/dev/tty; else printf '%s' "$1" >&2; fi; }
+ui_err() { if [[ -t 0 && -w /dev/tty ]]; then msg_err "$1" >/dev/tty; else msg_err "$1" >&2; fi; }
 prompt_domain_a_record() {
     local prompt="$1" d
     DOMAIN_INPUT=""
@@ -1518,7 +1520,7 @@ choose_adguard() {
     local ans mapped tty
     DEPLOY_AGH=""
     tty="/dev/tty"
-    [[ -r /dev/tty ]] || tty=""
+    [[ -t 0 && -r /dev/tty ]] || tty=""
     while true; do
         echo
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
@@ -1567,7 +1569,7 @@ choose_rkn_guard() {
     local ans mapped tty
     DEPLOY_RKN=""
     tty="/dev/tty"
-    [[ -r /dev/tty ]] || tty=""
+    [[ -t 0 && -r /dev/tty ]] || tty=""
     while true; do
         echo
         msg_inf '────────────────────────────────────────────────────────────────────────────────'
@@ -1806,7 +1808,9 @@ uninstall_rkn_guard() {
           /etc/rsyslog.d/10-iptables-scanners.conf \
           /etc/logrotate.d/iptables-scanners \
           /var/log/iptables-scanners-*
-    rm -rf /usr/local/lib/lucx-ui-pro
+    # This directory also contains the Clash subscription renderer.
+    # Remove it only when no other component still uses it.
+    rmdir /usr/local/lib/lucx-ui-pro 2>/dev/null || true
     systemctl daemon-reload
     systemctl reset-failed 2>/dev/null || true
     systemctl restart rsyslog 2>/dev/null || true
@@ -2083,6 +2087,8 @@ uninstall_xui() {
     # Remove only the two jobs installed by setup_cron.
     remove_lucx_cron_jobs
     msg_inf "Удаляю файлы панели и созданные ею конфигурации..."
+    systemctl stop lucx-clash-sub.service 2>/dev/null || true
+    systemctl disable lucx-clash-sub.service 2>/dev/null || true
     rm -rf /etc/x-ui /usr/local/x-ui /usr/local/lib/3x-ui-pro /usr/local/lib/lucx-ui-pro \
            /opt/AdGuardHome /root/.lucx-adguard-info /root/.lucx-tg-web-proxy-info \
            /var/www/tproxy
@@ -2094,6 +2100,7 @@ uninstall_xui() {
     fi
     rm -f /usr/bin/x-ui /usr/bin/x-ui-temp /etc/systemd/system/x-ui.service \
           /etc/systemd/system/mtr-backend.service /etc/systemd/system/AdGuardHome.service \
+          /etc/systemd/system/lucx-clash-sub.service \
           /etc/systemd/system/lucx-apply-qdisc.service \
           /etc/systemd/system/lucx-qdisc-sync.service /etc/systemd/system/lucx-qdisc-sync.path \
           /usr/local/sbin/lucx-apply-qdisc /usr/local/sbin/lucx-awg-sysctl-guard \
@@ -2110,8 +2117,9 @@ uninstall_xui() {
         done < "$dir/domains"
     fi
     rm -f /etc/nginx/sites-enabled/80.conf /etc/nginx/sites-available/80.conf \
+          /etc/nginx/sites-enabled/00-clash-maps.conf /etc/nginx/sites-available/00-clash-maps.conf \
           /etc/nginx/stream-enabled/stream.conf /etc/nginx/snippets/includes.conf \
-          /etc/nginx/snippets/adguard.conf
+          /etc/nginx/snippets/adguard.conf /var/www/subpage/clash.yaml.tpl
     systemctl daemon-reload 2>/dev/null || true
     msg_inf "Сертификаты сайтов и данные их продления сохраняются."
     restore_preinstall_state || return 1
@@ -2147,7 +2155,7 @@ confirm_reinstall() {
         msg_err "Ваша панель и все её данные будут безвозвратно удалены. Продолжить?"
         echo '  1) Да'
         echo '  2) Нет'
-        if [[ -r /dev/tty ]]; then read -r -p 'Выбор [1-2]: ' answer </dev/tty || return 1
+        if [[ -t 0 && -r /dev/tty ]]; then read -r -p 'Выбор [1-2]: ' answer </dev/tty || return 1
         else read -r -p 'Выбор [1-2]: ' answer || return 1; fi
         case "${answer// /}" in
             1) return 0 ;;
@@ -2431,6 +2439,16 @@ EOF
     # Shared proxy locations for xray inbounds (included by both vhosts)
     cat > /etc/nginx/snippets/includes.conf <<EOF
     #Subscription — prefix location covers all sub-paths (assets, JS, etc.)
+    # One-level client URL: Clash/Mihomo gets YAML, other clients get panel output.
+    location ~ ^/${sub_path}/(?<clash_sub_id>[^/]+)\$ {
+        if (\$hack = 1) { return 404; }
+        if (\$serve_clash_yaml = 1) { rewrite ^ /__lucx_clash?sub_id=\$clash_sub_id last; }
+        proxy_redirect off;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_pass https://127.0.0.1:${sub_port};
+    }
     location /${sub_path}/ {
         if (\$hack = 1) { return 404; }
         proxy_redirect off;
@@ -2517,6 +2535,19 @@ EOF
     location / { try_files \$uri \$uri/ =404; }
 EOF
 
+    # The maps belong in http context, shared by both TLS virtual hosts.
+    cat > /etc/nginx/sites-available/00-clash-maps.conf <<'EOF'
+map $http_user_agent $lucx_clash_ua {
+    ~*(clash|mihomo|stash|surfboard) 1;
+    default 0;
+}
+map "$lucx_clash_ua:$arg_provider" $serve_clash_yaml {
+    "1:" 1;
+    default 0;
+}
+EOF
+    ln -sf /etc/nginx/sites-available/00-clash-maps.conf /etc/nginx/sites-enabled/00-clash-maps.conf
+
     # Main domain vhost (TLS termination at 7443, proxy_protocol)
     cat > "/etc/nginx/sites-available/${domain}" <<EOF
 server {
@@ -2573,6 +2604,12 @@ server {
         proxy_pass https://127.0.0.1:${panel_port};
     }
 
+    location = /__lucx_clash {
+        internal;
+        proxy_pass http://127.0.0.1:${clash_port}/api/clash\$is_args\$args;
+        proxy_set_header Host \$host;
+    }
+
     include /etc/nginx/snippets/includes.conf;
 }
 EOF
@@ -2612,6 +2649,12 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_pass http://127.0.0.1:${panel_port};
+    }
+
+    location = /__lucx_clash {
+        internal;
+        proxy_pass http://127.0.0.1:${clash_port}/api/clash\$is_args\$args;
+        proxy_set_header Host \$host;
     }
 
     include /etc/nginx/snippets/includes.conf;
@@ -2996,6 +3039,326 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CLASH / MIHOMO SUBSCRIPTION
+# ─────────────────────────────────────────────────────────────────────────────
+install_clash_subscription() {
+    install -d -m 0755 /var/www/subpage /usr/local/lib/lucx-ui-pro
+    # Based on mozaroc/3x-ui-pro assets/clash/clash.yaml (a2c430c).
+    cat > /var/www/subpage/clash.yaml.tpl <<'LUCX_CLASH_TEMPLATE'
+mode: rule
+log-level: info
+mixed-port: 10000
+unified-delay: true
+allow-lan: true
+tcp-concurrent: true
+enable-process: true
+find-process-mode: always
+global-client-fingerprint: chrome
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+sniffer:
+  enable: true
+  force-dns-mapping: true
+  parse-pure-ip: true
+  sniff:
+    HTTP:
+      ports:
+        - 80
+        - 8080-8880
+      override-destination: true
+    TLS:
+      ports:
+        - 443
+        - 8443
+
+dns:
+  enable: true
+  prefer-h3: true
+  use-hosts: true
+  use-system-hosts: true
+  listen: 127.0.0.1:6868
+  ipv6: false
+  enhanced-mode: redir-host
+  default-nameserver:
+    - tls://77.88.8.8#DIRECT # Yandex DNS over TLS
+    - 195.208.4.1#DIRECT # НСДИ
+    - system
+  proxy-server-nameserver:
+    - tls://77.88.8.8#DIRECT # Yandex DNS over TLS
+    - 195.208.4.1#DIRECT # НСДИ
+    - system
+  direct-nameserver:
+    - tls://77.88.8.8#DIRECT # Yandex DNS over TLS
+    - 195.208.4.1#DIRECT # НСДИ
+    - system
+  nameserver:
+    - https://cloudflare-dns.com/dns-query#PROXY
+
+proxy-providers:
+  sub:
+    type: http
+    url: https://${DOMAIN}/${SUB_PATH}/${SUB_ID}?provider=1
+    path: ./proxy_providers/base64.yml
+    interval: 3600
+    override:
+      override-expr:
+        - '(select(.type == "vless" and .["reality-opts"] != null) | .["reality-opts"]["support-x25519mlkem768"]) = true'
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      timeout: 5000
+      lazy: true
+      expected-status: 204
+
+proxy-groups:
+  - name: 🌍 VPN
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Hijacking.png
+    type: select
+    use:
+      - sub
+    proxies:
+      - ⚡️ Fastest
+  - name: ▶️ YouTube
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/YouTube.png
+    type: select
+    use:
+      - sub
+    proxies:
+      - 🌍 VPN
+  - name: 💬 Discord
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Discord.png
+    type: select
+    use:
+      - sub
+    proxies:
+      - 🌍 VPN
+  - name: ⚡️ Fastest
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Auto.png
+    type: url-test
+    tolerance: 150
+    url: https://cp.cloudflare.com/generate_204
+    interval: 300
+    use:
+      - sub
+  - name: ➤ Telegram
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Telegram.png
+    type: select
+    use:
+      - sub
+    proxies:
+      - 🌍 VPN
+  - name: ➤ WhatsApp
+    icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Facebook.png
+    type: select
+    use:
+      - sub
+    proxies:
+      - 🌍 VPN
+  - name: PROXY
+    type: select
+    hidden: true
+    use:
+      - sub
+    proxies:
+      - 🌍 VPN
+
+rule-providers:
+  facebook-ips:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    interval: 86400
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geoip/facebook.mrs
+    path: ./rule-sets/facebook-ips.mrs
+  whatsapp-domains:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/whatsapp.mrs
+    path: ./rule-sets/whatsapp-domains.mrs
+  telegram-ips:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    interval: 86400
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geoip/telegram.mrs
+    path: ./rule-sets/telegram-ips.mrs
+  telegram-domains:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/telegram.mrs
+    path: ./rule-sets/telegram-domains.mrs
+  discord_domains:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/discord.mrs
+    path: ./rule-sets/discord_domains.mrs
+  discord_voiceips:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/other/discord-voice-ip-list.mrs
+    path: ./rule-sets/discord_voiceips.mrs
+  refilter_domains:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/re-filter/domain-rule.mrs
+    path: ./re-filter/domain-rule.mrs
+    interval: 86400
+  refilter_ipsum:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/re-filter/ip-rule.mrs
+    path: ./re-filter/ip-rule.mrs
+    interval: 86400
+  youtube:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/youtube.mrs
+    path: ./rule-sets/youtube.mrs
+  oisd_big:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/oisd/big.mrs
+    path: ./oisd/big.mrs
+  torrent-trackers:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/other/torrent-trackers.mrs
+    path: ./rule-sets/torrent-trackers.mrs
+    interval: 86400
+  torrent-clients:
+    type: http
+    behavior: classical
+    format: yaml
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/other/torrent-clients.yaml
+    path: ./rule-sets/torrent-clients.yaml
+    interval: 86400
+  ru-bundle:
+    type: http
+    behavior: domain
+    format: mrs
+    url: https://github.com/legiz-ru/mihomo-rule-sets/raw/main/ru-bundle/rule.mrs
+    path: ./ru-bundle/rule.mrs
+    interval: 86400
+
+rules:
+  - OR,((DOMAIN,ipwhois.app),(DOMAIN,ipwho.is),(DOMAIN,api.ip.sb),(DOMAIN,ipapi.co),(DOMAIN,ipinfo.io),(DOMAIN,ip-api.com),(DOMAIN,cloudflare-dns.com)),🌍 VPN
+  - RULE-SET,oisd_big,REJECT
+  - OR,((RULE-SET,telegram-ips),(RULE-SET,telegram-domains)),➤ Telegram
+  - OR,((RULE-SET,facebook-ips),(RULE-SET,whatsapp-domains)),➤ WhatsApp
+  - OR,((RULE-SET,torrent-clients),(RULE-SET,torrent-trackers)),DIRECT
+  - RULE-SET,youtube,▶️ YouTube
+  - OR,((RULE-SET,discord_domains),(RULE-SET,discord_voiceips),(PROCESS-NAME,Discord.exe)),💬 Discord
+  - RULE-SET,ru-bundle,🌍 VPN
+  - RULE-SET,refilter_domains,🌍 VPN
+  - RULE-SET,refilter_ipsum,🌍 VPN
+  - MATCH,DIRECT
+LUCX_CLASH_TEMPLATE
+    python3 - "$domain" "$sub_path" <<'PY_CLASH_TEMPLATE'
+from pathlib import Path
+import sys
+path = Path('/var/www/subpage/clash.yaml.tpl')
+text = path.read_text(encoding='utf-8')
+text = text.replace('${DOMAIN}', sys.argv[1]).replace('${SUB_PATH}', sys.argv[2])
+path.write_text(text, encoding='utf-8')
+PY_CLASH_TEMPLATE
+    chmod 0644 /var/www/subpage/clash.yaml.tpl
+
+    cat > /usr/local/lib/lucx-ui-pro/clash-sub-server.py <<'PY_CLASH_SERVER'
+#!/usr/bin/env python3
+"""Local YAML template renderer for a per-client Clash subscription."""
+import argparse
+import re
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+TEMPLATE = Path('/var/www/subpage/clash.yaml.tpl')
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlsplit(self.path)
+        if parsed.path == '/health':
+            return self.reply(200, b'ok', 'text/plain')
+        if parsed.path != '/api/clash':
+            return self.reply(404, b'not found', 'text/plain')
+        sub_id = parse_qs(parsed.query).get('sub_id', [''])[0]
+        if not re.fullmatch(r'[A-Za-z0-9._~-]{1,256}', sub_id):
+            return self.reply(400, b'invalid subscription id', 'text/plain')
+        try:
+            body = TEMPLATE.read_text(encoding='utf-8').replace('${SUB_ID}', sub_id).encode('utf-8')
+        except OSError:
+            return self.reply(503, b'template unavailable', 'text/plain')
+        self.reply(200, body, 'text/yaml; charset=utf-8')
+
+    def reply(self, status, body, content_type):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        if status == 200 and content_type.startswith('text/yaml'):
+            self.send_header('Content-Disposition', 'attachment; filename="clash.yaml"')
+        self.end_headers()
+        self.wfile.write(body)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, required=True)
+    args = parser.parse_args()
+    ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+PY_CLASH_SERVER
+    chmod 0755 /usr/local/lib/lucx-ui-pro/clash-sub-server.py
+    cat > /etc/systemd/system/lucx-clash-sub.service <<EOF
+[Unit]
+Description=LucX-UI Clash subscription renderer
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+ExecStart=/usr/bin/python3 /usr/local/lib/lucx-ui-pro/clash-sub-server.py --port ${clash_port}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now lucx-clash-sub.service || return 1
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if curl -fsS --max-time 2 "http://127.0.0.1:${clash_port}/health" >/dev/null; then
+            msg_ok "Clash/Mihomo subscription ready."
+            return 0
+        fi
+        sleep 1
+    done
+    msg_err "Clash subscription renderer did not start."
+    systemctl status lucx-clash-sub.service --no-pager -l 2>/dev/null || true
+    return 1
+}
+
 # INSTALL FAKE SITE
 # ─────────────────────────────────────────────────────────────────────────────
 install_fake_site() {
@@ -3267,7 +3630,7 @@ maybe_reboot_for_awg() {
     [[ -f /etc/x-ui/.awg-reboot-needed ]] || return 0
 
     local ans=""
-    if [[ -r /dev/tty ]]; then
+    if [[ -t 0 && -r /dev/tty ]]; then
         while true; do
             echo
             msg_inf "────────────────────────────────────────────────────────────────────────────────"
@@ -3702,6 +4065,9 @@ show_results() {
         msg_inf "X-UI Secure Panel: ${HP}\n"
         echo -e "Username:  ${config_username}\n"
         echo -e "Password:  ${config_password}\n"
+        msg_inf "Clash/Mihomo: используйте ссылку подписки клиента из панели."
+        echo "Формат: https://${domain}/${sub_path}/<subId>"
+        echo
         msg_inf "────────────────────────────────────────────────────────────────────────────────"
         print_adguard_results
         if [[ "${DEPLOY_TPROXY}" == "1" && -n "${webproxy_domain}" && -n "${TPROXY_SECRET}" ]]; then
@@ -3769,6 +4135,7 @@ main() {
     fi
     patch_panel_bbr_script
 
+    install_clash_subscription || return 1
     configure_nginx || return 1
     if [[ "${DEPLOY_AGH}" == "1" ]]; then
         install_adguard || return 1
