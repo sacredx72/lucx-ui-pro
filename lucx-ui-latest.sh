@@ -63,11 +63,16 @@ check_cpu() {
 check_os
 check_cpu
 
+# Package manager used by install/uninstall cleanup. Must be initialized before
+# any path that can call uninstall_xui during a repeated/full installation.
+Pak="apt-get"
+
 # ─── Constants ───────────────────────────────────────────────────────────────
 XUIDB="/etc/x-ui/x-ui.db"
 GITHUB_RAW="https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main"
 FAKE_SITE_COUNT=50
 PREINSTALL_STATE_DIR="/var/lib/lucx-ui-preinstall"
+INSTALL_IN_PROGRESS_FILE="${PREINSTALL_STATE_DIR}/install-in-progress"
 
 # ─── Default argument values ─────────────────────────────────────────────────
 domain=""
@@ -92,6 +97,7 @@ RKN_GUARD_UNINSTALL=""
 TG_WEB_PROXY_ONLY=""
 TG_WEB_PROXY_UNINSTALL=""
 DEPLOY_RKN=""
+DEPLOY_AWG=""
 BASE_DEPENDENCIES_READY="0"
 CUSTOM_DOH_URL=""
 CUSTOM_DOH_HOST=""
@@ -182,16 +188,97 @@ restore_firewall_state() {
     msg_ok "Firewall restored to its pre-install state."
 }
 
-# ─── Stop & clean previous install (called from main, after domain validation) ─
+# Snapshot shared resources before the first mutation. The marker is written last.
+# Uninstall refuses to guess ownership if this snapshot is missing.
+save_preinstall_state() {
+    local dir="${PREINSTALL_STATE_DIR}" path
+    umask 077
+    install -d -m 0700 "$dir"
+    : > "$dir/existing-paths"
+    for path in /etc/nginx /var/www/html /var/www/diagnostics /var/www/subpage \
+                /etc/sysctl.conf /etc/default/x-ui /etc/fail2ban /etc/modules-load.d/tcp-bbr.conf \
+                /etc/modules-load.d/lucx-ui-network.conf \
+                /etc/sysctl.d/99-bbr-x-ui.conf \
+                /etc/sysctl.d/99-zz-lucx-ui-tuning.conf \
+                /etc/sysctl.d/99-awg-performance.conf /etc/modules-load.d/amneziawg.conf; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            printf '%s\n' "$path" >> "$dir/existing-paths"
+            tar -rpf "$dir/baseline.tar" -C / "${path#/}" || return 1
+        fi
+    done
+    : > "$dir/packages"
+    for path in nginx nginx-common nginx-core nginx-full certbot python3-certbot-nginx \
+                ufw fail2ban ipset iptables cron sqlite3 mtr libcap2-bin; do
+        dpkg-query -W -f='${Status}' "$path" 2>/dev/null | grep -qx 'install ok installed' && \
+            printf '%s\n' "$path" >> "$dir/packages"
+    done
+    systemctl is-enabled --quiet nginx && touch "$dir/nginx-enabled" || true
+    systemctl is-active --quiet nginx && touch "$dir/nginx-active" || true
+    crontab -l > "$dir/root-crontab" 2>/dev/null || : > "$dir/root-crontab"
+    sysctl -n net.core.default_qdisc > "$dir/qdisc" 2>/dev/null || true
+    sysctl -n net.ipv4.tcp_congestion_control > "$dir/congestion-control" 2>/dev/null || true
+    save_firewall_state || return 1
+    touch "$dir/owned-by-lucx-ui-pro"
+}
+
+restore_preinstall_state() {
+    local dir="$PREINSTALL_STATE_DIR" path package
+    msg_inf "Восстанавливаю файлы и настройки, сохранённые до установки..."
+    # Remove only paths that were absent before install; restore originals in place.
+    for path in /etc/nginx /var/www/html /var/www/diagnostics /var/www/subpage \
+                /etc/default/x-ui /etc/fail2ban \
+                /etc/modules-load.d/tcp-bbr.conf /etc/modules-load.d/lucx-ui-network.conf \
+                /etc/sysctl.d/99-bbr-x-ui.conf /etc/sysctl.d/99-zz-lucx-ui-tuning.conf \
+                /etc/sysctl.d/99-awg-performance.conf /etc/modules-load.d/amneziawg.conf; do
+        grep -Fxq "$path" "$dir/existing-paths" || rm -rf -- "$path"
+    done
+    # Keep certificates and certbot's renewal state, including those issued
+    # during this install. Older snapshots may contain them: never roll back
+    # a renewed certificate to the version from before installation.
+    [[ ! -s "$dir/baseline.tar" ]] || tar -xpf "$dir/baseline.tar" -C / \
+        --exclude='root/cert' --exclude='root/cert/*' \
+        --exclude='etc/letsencrypt' --exclude='etc/letsencrypt/*' \
+        --exclude='var/lib/letsencrypt' --exclude='var/lib/letsencrypt/*' \
+        --exclude='var/log/letsencrypt' --exclude='var/log/letsencrypt/*' || {
+            msg_err "Не удалось восстановить исходные файлы из снимка."
+            return 1
+        }
+    # The installer edits nginx.conf and sysctl.conf; restore them even when
+    # another process created them after the snapshot.
+    if ! grep -Fxq /etc/sysctl.conf "$dir/existing-paths"; then rm -f /etc/sysctl.conf; fi
+    sysctl -w "net.core.default_qdisc=$(cat "$dir/qdisc")" >/dev/null 2>&1 || true
+    sysctl -w "net.ipv4.tcp_congestion_control=$(cat "$dir/congestion-control")" >/dev/null 2>&1 || true
+    restore_firewall_state
+    if [[ -f "$dir/nginx-enabled" ]]; then systemctl enable nginx >/dev/null 2>&1 || true
+    else systemctl disable nginx >/dev/null 2>&1 || true; fi
+    if [[ -f "$dir/nginx-active" ]]; then systemctl start nginx >/dev/null 2>&1 || true; fi
+    # No autoremove: it could remove packages installed by the administrator.
+    msg_inf "Удаляю пакеты, установленные вместе с панелью (certbot сохраняется)..."
+    for package in nginx-full nginx nginx-common nginx-core fail2ban ipset iptables ufw cron sqlite3 mtr libcap2-bin netcat-openbsd; do
+        if ! grep -Fxq "$package" "$dir/packages" && dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+            msg_inf "  Удаляю пакет: ${package}"
+            apt-get -y purge "$package" >/dev/null 2>&1 || msg_err "Не удалось удалить пакет ${package}; проверьте его вручную."
+        fi
+    done
+}
+
 clean_previous_install() {
-    uninstall_adguard quiet 2>/dev/null || true
-    systemctl stop x-ui 2>/dev/null || true
-    rm -rf /etc/systemd/system/x-ui.service
-    rm -rf /usr/local/x-ui
-    rm -rf /etc/x-ui
-    rm -rf /etc/nginx/sites-enabled/*
-    rm -rf /etc/nginx/sites-available/*
-    rm -rf /etc/nginx/stream-enabled/*
+    # A repeated install already ran the owned uninstall before any questions.
+    # On a fresh install no panel files may be removed here.
+    if [[ -e /etc/x-ui || -e /usr/local/x-ui || -e /usr/bin/x-ui ]]; then
+        msg_err "Another x-ui installation exists. Refusing to overwrite it."
+        return 1
+    fi
+}
+
+mark_install_in_progress() {
+    mkdir -p "${PREINSTALL_STATE_DIR}"
+    : > "${INSTALL_IN_PROGRESS_FILE}"
+    chmod 0600 "${INSTALL_IN_PROGRESS_FILE}"
+}
+
+clear_install_in_progress() {
+    rm -f "${INSTALL_IN_PROGRESS_FILE}"
 }
 
 # ─── Port / path generators ──────────────────────────────────────────────────
@@ -269,8 +356,6 @@ require_arg_value() {
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -install)          require_arg_value "$@"; INSTALL="$2";            shift 2 ;;
-        -subdomain)        require_arg_value "$@"; domain="$2";             shift 2 ;;
-        -reality_domain)   require_arg_value "$@"; reality_domain="$2";     shift 2 ;;
         -ONLY_CF_IP_ALLOW) require_arg_value "$@"; CFALLOW="$2";            shift 2 ;;
         -version)          require_arg_value "$@"; PANEL_VERSION="$2";      shift 2 ;;
         -adguard)          require_arg_value "$@"; ADGUARD_ONLY="$2";       shift 2 ;;
@@ -311,8 +396,39 @@ if (( _action_count != 1 )); then
     exit 2
 fi
 
-# ─── Detect package manager ───────────────────────────────────────────────────
-Pak=$(type apt &>/dev/null && echo "apt" || echo "yum")
+# ─── AmneziaWG install choice (must be the first install question) ────────────
+choose_amneziawg() {
+    [[ "${INSTALL}" == "y" ]] || return 0
+    [[ -n "${DEPLOY_AWG}" ]] && return 0
+
+    # In a non-interactive stdin-only invocation there is no safe way to ask.
+    # Preserve the historical non-interactive behaviour: install AWG unless
+    # an explicit interactive menu choice is available.
+    if [[ ! -r /dev/tty ]]; then
+        DEPLOY_AWG="y"
+        return 0
+    fi
+
+    local ans
+    while true; do
+        echo
+        msg_inf '────────────────────────────────────────────────────────────────────────────────'
+        msg_inf 'Установка AmneziaWG kernel module:'
+        echo '  1) Установить AmneziaWG kernel module'
+        echo '  2) Не устанавливать сейчас'
+        msg_inf '────────────────────────────────────────────────────────────────────────────────'
+        echo -en 'Выбор [1-2]: '
+        read -r ans </dev/tty || ans=""
+        case "${ans// /}" in
+            1) DEPLOY_AWG="y"; break ;;
+            2) DEPLOY_AWG="n"; break ;;
+            *) continue ;;
+        esac
+    done
+}
+
+# The choice is presented only after any previous full LucX installation has
+# been completely removed, but still before domain/DNS/RKN questions.
 
 download_one_geo() {
     local dest="$1" name="$2" url="$3" fallback="${4:-}" min_bytes="${5:-50000}"
@@ -645,27 +761,33 @@ choose_extra_inbounds() {
                 5) has_valid=1; want_tproxy=1 ;;
             esac
         done
-        echo
-        if [[ "$has1" -eq 1 || "$has_valid" -eq 0 ]]; then
-            msg_inf 'Вы не выбрали ни одного инбаунда, все верно?'
-            echo '1 - Да'; echo '2 - Нет, выбрать снова'
-            want_hy2=0; want_q=0; want_c=0; want_tproxy=0
-        else
-            names=""
-            [[ "$want_hy2" -eq 1 ]] && names+="Hysteria2, "
-            [[ "$want_q" -eq 1 ]] && names+="qWDTT, "
-            [[ "$want_c" -eq 1 ]] && names+="CSQTT, "
-            [[ "$want_tproxy" -eq 1 ]] && names+="Telegram WEB-proxy, "
-            names="${names%, }"
-            msg_inf "Вы выбрали ${names}, все верно?"
-            echo '1 - Да'; echo '2 - Нет, выбрать снова'
-        fi
+        # The confirmation menu is redrawn in full after Enter/invalid input.
         ok=""
         while true; do
+            echo
+            msg_inf '────────────────────────────────────────────────────────────────────────────────'
+            if [[ "$has1" -eq 1 || "$has_valid" -eq 0 ]]; then
+                msg_inf 'Вы не выбрали ни одного инбаунда, все верно?'
+            else
+                names=""
+                [[ "$want_hy2" -eq 1 ]] && names+="Hysteria2, "
+                [[ "$want_q" -eq 1 ]] && names+="qWDTT, "
+                [[ "$want_c" -eq 1 ]] && names+="CSQTT, "
+                [[ "$want_tproxy" -eq 1 ]] && names+="Telegram WEB-proxy, "
+                names="${names%, }"
+                msg_inf "Вы выбрали ${names}, все верно?"
+            fi
+            echo '1 - Да'
+            echo '2 - Нет, выбрать снова'
+            msg_inf '──────────────────────────────────────────────────────────────────────────────────────────'
             echo -en 'Выбор [1-2]: '
             if [[ -n "$tty" ]]; then read -r confirm <"$tty" || confirm=""; else read -r confirm || confirm=""; fi
             confirm=$(echo "$confirm" | tr -d '[:space:]')
-            case "$confirm" in 1) ok=1; break ;; 2) ok=0; break ;; esac
+            case "$confirm" in
+                1) ok=1; break ;;
+                2) ok=0; break ;;
+                *) continue ;;
+            esac
         done
         [[ "$ok" == "1" ]] || continue
         if [[ "$want_hy2" -eq 1 ]]; then DEPLOY_HY2="1"; else DEPLOY_HY2="2"; fi
@@ -1073,7 +1195,7 @@ PY_TG_FORCE_NGINX
 ensure_tproxy_certificate() {
     local d="$1" was_active=0 rc=0
     if [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]]; then
-        :
+        msg_inf "Using existing certificate for ${d}."
     else
         systemctl is-active --quiet nginx && was_active=1
         systemctl stop nginx 2>/dev/null || true
@@ -1081,14 +1203,12 @@ ensure_tproxy_certificate() {
         [[ $was_active -eq 1 ]] && systemctl start nginx 2>/dev/null || true
         [[ $rc -eq 0 ]] || return "$rc"
     fi
-    mkdir -p "/root/cert/${d}"
-    chmod 755 /root/cert /root/cert/* 2>/dev/null || true
-    ln -sf "/etc/letsencrypt/live/${d}/fullchain.pem" "/root/cert/${d}/fullchain.pem"
-    ln -sf "/etc/letsencrypt/live/${d}/privkey.pem" "/root/cert/${d}/privkey.pem"
+    [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]] || return 1
+    ensure_panel_cert_links "$d"
 }
 
 uninstall_tg_web_proxy() {
-    local keep_cert="${1:-0}" proxy_domain had_proxy=0 nginx_cleanup_failed=0
+    local proxy_domain had_proxy=0 nginx_cleanup_failed=0
     proxy_domain=$(get_installed_tproxy_domain)
     if [[ -n "$proxy_domain" ]] || [[ -d /var/www/tproxy ]]; then had_proxy=1; fi
     if [[ -n "$proxy_domain" ]]; then
@@ -1100,14 +1220,7 @@ uninstall_tg_web_proxy() {
     remove_tproxy_inbound || return 1
     rm -rf /var/www/tproxy
     rm -f /root/.lucx-tg-web-proxy-info
-    if [[ -n "$proxy_domain" ]]; then
-        rm -rf "/root/cert/${proxy_domain}"
-        if [[ "$keep_cert" != "1" ]] &&
-           command -v certbot >/dev/null 2>&1 &&
-           [[ -f "/etc/letsencrypt/renewal/${proxy_domain}.conf" ]]; then
-            certbot delete --non-interactive --cert-name "$proxy_domain" >/dev/null 2>&1 || true
-        fi
-    fi
+    # Keep the domain certificate and its /root/cert links for future use.
     if [[ $had_proxy -eq 1 ]] && systemctl is-active --quiet x-ui; then
         x-ui restart >/dev/null 2>&1 || systemctl restart x-ui
     fi
@@ -1129,7 +1242,7 @@ install_tg_web_proxy() {
     previous_domain=$(get_installed_tproxy_domain)
     if [[ -n "$previous_domain" ]] || [[ -d /var/www/tproxy ]]; then
         msg_inf "Telegram WEB-proxy уже установлен — выполняется чистая переустановка."
-        uninstall_tg_web_proxy 1 || return 1
+        uninstall_tg_web_proxy || return 1
     fi
     get_server_ip
     [[ "$IP4" =~ $IP4_REGEX ]] || { msg_err "Не удалось определить IPv4 сервера."; return 1; }
@@ -1897,43 +2010,118 @@ print_adguard_results() {
     msg_inf '────────────────────────────────────────────────────────────────────────────────'
 }
 # ─────────────────────────────────────────────────────────────────────────────
+# AMNEZIAWG FULL UNINSTALL
+# ─────────────────────────────────────────────────────────────────────────────
+uninstall_awg_kernel_full() {
+    local script="/usr/local/x-ui/bin/install-awg-module.sh"
+
+    # Stop our guard first so it cannot race with the official AWG uninstaller
+    # while the installer/sysctl file is being removed.
+    systemctl stop lucx-awg-sysctl-guard.path lucx-awg-sysctl-guard.service 2>/dev/null || true
+
+    if [[ -x "$script" ]]; then
+        msg_inf "Removing AmneziaWG kernel module and tools..."
+        bash "$script" --uninstall >/dev/null 2>&1 || true
+    else
+        # Fallback for partially broken/removed panel installations.
+        rmmod amneziawg >/dev/null 2>&1 || true
+        if command -v dkms >/dev/null 2>&1; then
+            while read -r ver; do
+                [[ -n "$ver" ]] || continue
+                dkms remove -m amneziawg -v "$ver" --all >/dev/null 2>&1 || true
+            done < <(dkms status amneziawg 2>/dev/null | grep -oP 'amneziawg[,/] ?\K[^,]+' | sort -u || true)
+        fi
+        rm -rf /usr/src/amneziawg-* /var/lib/dkms/amneziawg
+        rm -f /usr/bin/awg /usr/bin/awg-quick \
+              /usr/local/bin/awg /usr/local/bin/awg-quick \
+              /usr/sbin/awg /usr/sbin/awg-quick \
+              /usr/local/sbin/awg /usr/local/sbin/awg-quick \
+              /etc/modules-load.d/amneziawg.conf \
+              /etc/sysctl.d/99-awg-performance.conf \
+              /etc/x-ui/.awg-module-version /etc/x-ui/.awg-reboot-needed
+        update-initramfs -u -k all >/dev/null 2>&1 || update-initramfs -u >/dev/null 2>&1 || true
+    fi
+
+    # The AWG installer owns this file, but a previous/partial install may
+    # leave it behind after the official uninstaller failed.
+    rm -f /etc/sysctl.d/99-awg-performance.conf
+    systemctl daemon-reload 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # UNINSTALL
 # ─────────────────────────────────────────────────────────────────────────────
+remove_lucx_cron_jobs() {
+    local geo='0 4 * * 0 /usr/local/x-ui/update-geodata.sh >/dev/null 2>&1'
+    local cert='0 1 * * * certbot renew --non-interactive --pre-hook "systemctl stop nginx" --deploy-hook "x-ui restart" --post-hook "systemctl start nginx" >/dev/null 2>&1'
+    crontab -l 2>/dev/null | grep -vFx -e "$geo" -e "$cert" | crontab - || true
+}
+
 uninstall_xui() {
-    # Remove optional components before deleting their binaries and configs.
-    uninstall_rkn_guard >/dev/null 2>&1 || true
-    uninstall_adguard 2>/dev/null || true
-    printf 'y\n' | x-ui uninstall >/dev/null 2>&1 || true
-    systemctl stop x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc 2>/dev/null || true
-    systemctl disable x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc 2>/dev/null || true
-    pkill -f 'mtg-linux-' >/dev/null 2>&1 || true
-    crontab -l 2>/dev/null | grep -vE 'certbot|x-ui|cloudflareips|nginx -s reload|update-geodata' | crontab - || true
-    rm -rf /etc/x-ui/ /usr/local/x-ui/ /usr/local/lib/3x-ui-pro/ \
-           /usr/local/lib/lucx-ui-pro/ /root/cert/ /opt/AdGuardHome \
-           /root/.lucx-adguard-info /root/.lucx-tg-web-proxy-info \
-           /var/www/diagnostics /var/www/tproxy
-    rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service \
-          /etc/systemd/system/mtr-backend.service \
-          /etc/systemd/system/AdGuardHome.service \
+    local dir="$PREINSTALL_STATE_DIR" cert
+    [[ -f "$dir/owned-by-lucx-ui-pro" && -f "$dir/existing-paths" ]] || {
+        msg_err "Ownership snapshot missing. Cannot safely uninstall an older or foreign installation."
+        return 1
+    }
+    msg_inf "Начинаю удаление LucX-UI..."
+    msg_inf "Останавливаю службы панели..."
+    systemctl stop x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync.path lucx-awg-sysctl-guard.path 2>/dev/null || true
+    if [[ -f "$dir/rkn-installed" ]]; then
+        msg_inf "Удаляю rkn-guard..."
+        uninstall_rkn_guard || msg_err "Не удалось полностью удалить rkn-guard."
+    fi
+    if [[ -f "$dir/adguard-installed" ]]; then
+        msg_inf "Удаляю AdGuard Home..."
+        uninstall_adguard || msg_err "Не удалось полностью удалить AdGuard Home."
+    fi
+    if [[ ! -f "$dir/awg-preexisting" ]]; then
+        msg_inf "Удаляю AmneziaWG..."
+        uninstall_awg_kernel_full
+    fi
+    msg_inf "Отключаю службы и удаляю задания cron..."
+    systemctl disable x-ui mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync.path lucx-awg-sysctl-guard.path 2>/dev/null || true
+    # Remove only the two jobs installed by setup_cron.
+    remove_lucx_cron_jobs
+    msg_inf "Удаляю файлы панели и созданные ею конфигурации..."
+    rm -rf /etc/x-ui /usr/local/x-ui /usr/local/lib/3x-ui-pro /usr/local/lib/lucx-ui-pro \
+           /opt/AdGuardHome /root/.lucx-adguard-info /root/.lucx-tg-web-proxy-info \
+           /var/www/tproxy
+    if [[ -f "$dir/release-archive" ]]; then
+        local archive_path
+        read -r archive_path < "$dir/release-archive" || true
+        [[ "$archive_path" =~ ^/usr/local/x-ui-linux-(amd64|arm64|armv5|armv6|armv7|386|s390x|ppc64le|riscv64)\.tar\.gz$ ]] && \
+            rm -f -- "$archive_path"
+    fi
+    rm -f /usr/bin/x-ui /usr/bin/x-ui-temp /etc/systemd/system/x-ui.service \
+          /etc/systemd/system/mtr-backend.service /etc/systemd/system/AdGuardHome.service \
           /etc/systemd/system/lucx-apply-qdisc.service \
-          /usr/local/sbin/lucx-apply-qdisc \
-          /etc/default/x-ui /etc/nginx/snippets/adguard.conf \
-          /etc/modules-load.d/tcp-bbr.conf \
-          /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
-    $Pak -y remove nginx nginx-common nginx-core nginx-full python3-certbot-nginx
-    $Pak -y purge  nginx nginx-common nginx-core nginx-full python3-certbot-nginx
-    $Pak -y autoremove
-    $Pak -y autoclean
-    rm -rf /var/www/html/ /var/www/diagnostics/ /var/www/subpage/ /var/www/tproxy/ /etc/nginx/ /usr/share/nginx/
+          /etc/systemd/system/lucx-qdisc-sync.service /etc/systemd/system/lucx-qdisc-sync.path \
+          /usr/local/sbin/lucx-apply-qdisc /usr/local/sbin/lucx-awg-sysctl-guard \
+          /etc/systemd/system/lucx-awg-sysctl-guard.service \
+          /etc/systemd/system/lucx-awg-sysctl-guard.path \
+          /etc/sysctl.d/99-lucx-ui-forwarding.conf /etc/sysctl.d/99-awg-performance.conf
+    # Keep all issued certificates and renewal data for reinstall or other sites.
+    # Remove only nginx files generated by this installer. Existing files are
+    # then restored from the baseline archive.
+    if [[ -f "$dir/domains" ]]; then
+        while IFS= read -r cert; do
+            [[ "$cert" =~ ^[A-Za-z0-9.-]+$ ]] || continue
+            rm -f "/etc/nginx/sites-enabled/$cert" "/etc/nginx/sites-available/$cert"
+        done < "$dir/domains"
+    fi
+    rm -f /etc/nginx/sites-enabled/80.conf /etc/nginx/sites-available/80.conf \
+          /etc/nginx/stream-enabled/stream.conf /etc/nginx/snippets/includes.conf \
+          /etc/nginx/snippets/adguard.conf
     systemctl daemon-reload 2>/dev/null || true
-    systemctl reset-failed 2>/dev/null || true
-    restore_firewall_state
-    rm -rf "$PREINSTALL_STATE_DIR"
+    msg_inf "Сертификаты сайтов и данные их продления сохраняются."
+    restore_preinstall_state || return 1
+    rm -rf -- "$dir"
+    msg_ok "Удаление LucX-UI завершено."
 }
 
 if [[ ${UNINSTALL} == *"y"* ]]; then
-    uninstall_xui
-    clear && msg_ok "Completely Uninstalled!" && exit 0
+    uninstall_xui || exit 1
+    exit 0
 fi
 
 # A normal repeated full installation must start from the same clean state as
@@ -1948,19 +2136,43 @@ is_full_install_request() {
 }
 
 existing_lucx_install_detected() {
-    [[ -d /etc/x-ui ||
-       -d /usr/local/x-ui ||
-       -f /usr/bin/x-ui ||
-       -f /etc/systemd/system/x-ui.service ||
-       -d "$PREINSTALL_STATE_DIR" ]]
+    [[ -e /etc/x-ui || -e /usr/local/x-ui || -e /usr/bin/x-ui ||
+       -e /etc/systemd/system/x-ui.service || -e "$PREINSTALL_STATE_DIR" ]]
+}
+
+confirm_reinstall() {
+    local answer
+    while true; do
+        echo
+        msg_err "Ваша панель и все её данные будут безвозвратно удалены. Продолжить?"
+        echo '  1) Да'
+        echo '  2) Нет'
+        if [[ -r /dev/tty ]]; then read -r -p 'Выбор [1-2]: ' answer </dev/tty || return 1
+        else read -r -p 'Выбор [1-2]: ' answer || return 1; fi
+        case "${answer// /}" in
+            1) return 0 ;;
+            2) return 1 ;;
+            *) continue ;;
+        esac
+    done
 }
 
 if is_full_install_request && existing_lucx_install_detected; then
-    msg_inf "Existing LucX-UI installation detected."
-    msg_inf "Running complete uninstall before asking new installation options..."
-    uninstall_xui
+    [[ -f "$PREINSTALL_STATE_DIR/owned-by-lucx-ui-pro" ]] || {
+        msg_err "Existing panel has no ownership snapshot; refusing to remove it automatically."
+        exit 1
+    }
+    if ! confirm_reinstall; then
+        msg_inf "Повторная установка отменена. Панель не изменена."
+        exit 0
+    fi
+    uninstall_xui || exit 1
     msg_ok "Previous installation completely removed."
 fi
+
+# This is the first installation question. It is intentionally after the full
+# cleanup of any previous LucX installation, and before domain/DNS/RKN questions.
+choose_amneziawg
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GET SERVER IP
@@ -2049,13 +2261,35 @@ install_packages() {
     ufw disable 2>/dev/null || true
 
     if [[ ${INSTALL} == *"y"* ]]; then
-        local version
+        local version nginx_repair=0
         version=$(grep -oP '(?<=VERSION_ID=")[0-9]+' /etc/os-release)
         [[ "$version" == "20" || "$version" == "22" ]] && echo "System: Ubuntu $version"
 
         $Pak -y update
         $Pak -y install curl wget jq bash sudo nginx-full certbot python3-certbot-nginx sqlite3 ufw netcat-openbsd mtr python3 libcap2-bin cron iproute2
-        systemctl daemon-reload && systemctl enable --now nginx
+
+        # A previous interrupted/buggy install can leave the nginx package
+        # installed while /etc/nginx (or nginx.conf) was deleted. In that case
+        # apt install reports success but does not recreate the missing conffile.
+        [[ -f /etc/nginx/nginx.conf ]] || nginx_repair=1
+        [[ -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] || nginx_repair=1
+        if [[ "$nginx_repair" == "1" ]]; then
+            msg_inf "Repairing nginx package/configuration from a partial previous install..."
+            DEBIAN_FRONTEND=noninteractive $Pak -y install --reinstall nginx-common nginx-full || return 1
+        fi
+
+        install -d -m 0755 /etc/nginx /etc/nginx/sites-available /etc/nginx/sites-enabled \
+            /etc/nginx/stream-enabled /etc/nginx/snippets
+        if [[ ! -f /etc/nginx/nginx.conf ]]; then
+            msg_err "nginx.conf is still missing after package repair."
+            return 1
+        fi
+
+        systemctl daemon-reload
+        systemctl reset-failed nginx 2>/dev/null || true
+        systemctl enable nginx >/dev/null 2>&1 || return 1
+        # Do not start nginx here. configure_nginx() must first write and test
+        # the complete panel configuration, then it starts the service.
     fi
 
     apt-get install -yqq --no-install-recommends ca-certificates
@@ -2064,6 +2298,30 @@ install_packages() {
 # ─────────────────────────────────────────────────────────────────────────────
 # SSL CERTIFICATES
 # ─────────────────────────────────────────────────────────────────────────────
+ensure_panel_cert_links() {
+    local d="$1" name link
+    mkdir -p "/root/cert/${d}"
+    chmod 755 /root/cert /root/cert/* 2>/dev/null || true
+    for name in fullchain.pem privkey.pem; do
+        link="/root/cert/${d}/${name}"
+        if [[ -L "$link" && ! -e "$link" ]]; then rm -f -- "$link"; fi
+        if [[ ! -e "$link" && ! -L "$link" ]]; then
+            ln -s "/etc/letsencrypt/live/${d}/${name}" "$link" || return 1
+        fi
+    done
+}
+
+ensure_site_certificate() {
+    local d="$1"
+    if [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]]; then
+        msg_inf "Using existing certificate for ${d}."
+        return 0
+    fi
+    certbot certonly --standalone --non-interactive --agree-tos \
+        --register-unsafely-without-email -d "$d" || return 1
+    [[ -s "/etc/letsencrypt/live/${d}/fullchain.pem" && -s "/etc/letsencrypt/live/${d}/privkey.pem" ]]
+}
+
 get_ssl_certs() {
     systemctl stop nginx 2>/dev/null || true
     fuser -k 80/tcp 80/udp 443/tcp 443/udp 2>/dev/null || true
@@ -2080,35 +2338,24 @@ get_ssl_certs() {
         [[ $resolve_ok == false ]] && exit 1
     fi
 
-    certbot certonly --standalone --non-interactive --agree-tos \
-        --register-unsafely-without-email -d "$domain"
-    if [[ ! -d "/etc/letsencrypt/live/${domain}/" ]]; then
+    if ! ensure_site_certificate "$domain"; then
         systemctl start nginx >/dev/null 2>&1
         msg_err "$domain SSL could not be generated! Check Domain/IP." && exit 1
     fi
 
-    certbot certonly --standalone --non-interactive --agree-tos \
-        --register-unsafely-without-email -d "$reality_domain"
-    if [[ ! -d "/etc/letsencrypt/live/${reality_domain}/" ]]; then
+    if ! ensure_site_certificate "$reality_domain"; then
         systemctl start nginx >/dev/null 2>&1
         msg_err "$reality_domain SSL could not be generated! Check Domain/IP." && exit 1
     fi
 
-    mkdir -p /root/cert/${domain}
-    chmod 755 /root/cert/*
-    ln -sf /etc/letsencrypt/live/${domain}/fullchain.pem /root/cert/${domain}/fullchain.pem
-    ln -sf /etc/letsencrypt/live/${domain}/privkey.pem   /root/cert/${domain}/privkey.pem
+    ensure_panel_cert_links "$domain" || return 1
 
     if [[ "${DEPLOY_TPROXY}" == "1" && -n "${webproxy_domain}" ]]; then
-        certbot certonly --standalone --non-interactive --agree-tos \
-            --register-unsafely-without-email -d "$webproxy_domain"
-        if [[ ! -d "/etc/letsencrypt/live/${webproxy_domain}/" ]]; then
+        if ! ensure_site_certificate "$webproxy_domain"; then
             systemctl start nginx >/dev/null 2>&1
             msg_err "$webproxy_domain SSL could not be generated! Check Domain/IP." && exit 1
         fi
-        mkdir -p /root/cert/${webproxy_domain}
-        ln -sf /etc/letsencrypt/live/${webproxy_domain}/fullchain.pem /root/cert/${webproxy_domain}/fullchain.pem
-        ln -sf /etc/letsencrypt/live/${webproxy_domain}/privkey.pem   /root/cert/${webproxy_domain}/privkey.pem
+        ensure_panel_cert_links "$webproxy_domain" || return 1
     fi
 }
 
@@ -2116,7 +2363,12 @@ get_ssl_certs() {
 # CONFIGURE NGINX
 # ─────────────────────────────────────────────────────────────────────────────
 configure_nginx() {
-    mkdir -p /etc/nginx/stream-enabled /etc/nginx/snippets
+    install -d -m 0755 /etc/nginx /etc/nginx/sites-available /etc/nginx/sites-enabled \
+        /etc/nginx/stream-enabled /etc/nginx/snippets
+    [[ -f /etc/nginx/nginx.conf ]] || {
+        msg_err "nginx.conf not found. Package repair failed before nginx configuration."
+        return 1
+    }
 
     # nginx >= 1.25.1 deprecates "listen ... http2" in favor of "http2 on;";
     # older versions (Debian 12 / Ubuntu 24.04) don't know the new directive
@@ -2399,13 +2651,37 @@ _arch() {
     esac
 }
 
+# Same checksum asset and 404 compatibility rule as the upstream installer.
+verify_release_checksum() {
+    local url="$1" file="$2" sums="${2}.sha256" code expected actual
+    code=$(curl -sL --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 60 \
+        -o "$sums" -w '%{http_code}' "${url}.sha256") || {
+        rm -f "$sums" "$file"; return 1;
+    }
+    if [[ "$code" == "404" ]]; then
+        rm -f "$sums"
+        msg_inf "This older release has no checksum; verification unavailable."
+        return 0
+    fi
+    [[ "$code" == "200" ]] || { rm -f "$sums" "$file"; return 1; }
+    expected=$(awk 'NR == 1 {print $1}' "$sums")
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    rm -f "$sums"
+    if [[ ! "$expected" =~ ^[0-9a-f]{64}$ || "$expected" != "$actual" ]]; then
+        rm -f "$file"
+        msg_err "Release checksum mismatch."
+        return 1
+    fi
+    msg_ok "Release checksum verified: $actual"
+}
+
 _panel_initial_config() {
     /usr/local/x-ui/x-ui setting -username "asdfasdf" -password "asdfasdf" -port "2096" -webBasePath "asdfasdf"
     /usr/local/x-ui/x-ui migrate
 }
 
 install_panel() {
-    local tag_version dest script_ref GH RAW
+    local tag_version dest script_ref GH RAW release_url
     GH='https://github.com'
     RAW='https://raw.githubusercontent.com'
     apt-get update && apt-get install -y -q wget curl tar tzdata
@@ -2427,8 +2703,11 @@ install_panel() {
         fi
     fi
     echo "Installing LucX-UI ${tag_version} ..."
-    wget -N -O /usr/local/x-ui-linux-$(_arch).tar.gz "$GH/AlexeyLCP/lucx-ui/releases/download/${tag_version}/x-ui-linux-$(_arch).tar.gz"
-    [[ $? -ne 0 ]] && echo "Download failed." && exit 1
+    release_url="$GH/AlexeyLCP/lucx-ui/releases/download/${tag_version}/x-ui-linux-$(_arch).tar.gz"
+    printf '%s\n' "/usr/local/x-ui-linux-$(_arch).tar.gz" > "$PREINSTALL_STATE_DIR/release-archive"
+    wget -O "/usr/local/x-ui-linux-$(_arch).tar.gz" "$release_url" || return 1
+    [[ -s "/usr/local/x-ui-linux-$(_arch).tar.gz" ]] || return 1
+    verify_release_checksum "$release_url" "/usr/local/x-ui-linux-$(_arch).tar.gz" || return 1
     script_ref="${tag_version}"
     [[ "$script_ref" == "dev-latest" ]] && script_ref="main"
     wget -O /usr/bin/x-ui-temp "$RAW/AlexeyLCP/lucx-ui/${script_ref}/x-ui.sh"
@@ -2452,8 +2731,73 @@ install_panel() {
     cp -f x-ui.service.debian /etc/systemd/system/x-ui.service
     systemctl daemon-reload
     systemctl enable x-ui
-    systemctl start x-ui
+    # Do not start x-ui here. The bootstrap configuration still uses the
+    # temporary panel port and the final subscription port has not yet been
+    # written. Starting here can make the web server and sub server compete
+    # for port 2096. The first real start is deferred until configure_xui_db().
     msg_ok "LucX-UI ${tag_version} installed."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FAIL2BAN / IP LIMIT
+# Match upstream LucX installer: delegate setup to the freshly installed x-ui
+# CLI so the panel's own jail/filter/action logic stays authoritative.
+# Non-fatal by design; XUI_ENABLE_FAIL2BAN=false opts out.
+# ─────────────────────────────────────────────────────────────────────────────
+setup_fail2ban() {
+    if [[ -n "${XUI_ENABLE_FAIL2BAN+x}" && "${XUI_ENABLE_FAIL2BAN}" != "true" ]]; then
+        msg_inf "XUI_ENABLE_FAIL2BAN=${XUI_ENABLE_FAIL2BAN}, skipping Fail2ban auto-setup."
+        return 0
+    fi
+
+    if [[ ! -x /usr/bin/x-ui ]]; then
+        msg_inf "x-ui CLI not found; skipping Fail2ban auto-setup."
+        return 0
+    fi
+
+    # Older x-ui scripts may not provide the non-interactive setup command.
+    if ! grep -q '"setup-fail2ban")' /usr/bin/x-ui; then
+        msg_inf "This x-ui.sh predates 'x-ui setup-fail2ban'; skipping Fail2ban auto-setup."
+        return 0
+    fi
+
+    msg_inf "Setting up Fail2ban for the IP Limit feature..."
+    if /usr/bin/x-ui setup-fail2ban; then
+        msg_ok "Fail2ban setup complete."
+    else
+        msg_inf "Fail2ban setup did not finish; IP Limit stays disabled until it is configured from x-ui. Continuing."
+    fi
+    return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# X-UI SERVICE READINESS
+# ─────────────────────────────────────────────────────────────────────────────
+wait_for_xui_active() {
+    local timeout="${1:-15}" i
+    for ((i=0; i<timeout; i++)); do
+        if systemctl is-active --quiet x-ui; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+restart_xui_wait() {
+    x-ui restart >/dev/null 2>&1 || true
+    if wait_for_xui_active 15; then
+        return 0
+    fi
+    systemctl reset-failed x-ui 2>/dev/null || true
+    systemctl restart x-ui >/dev/null 2>&1 || true
+    if wait_for_xui_active 15; then
+        return 0
+    fi
+    msg_err "LucX-UI did not become active after restart."
+    systemctl status x-ui --no-pager -l 2>/dev/null || true
+    journalctl -u x-ui -n 40 --no-pager 2>/dev/null || true
+    return 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2640,7 +2984,15 @@ EOF
         -webCert    "/root/cert/${domain}/fullchain.pem" \
         -webCertKey "/root/cert/${domain}/privkey.pem"
 
-    x-ui start
+    # First real start: final panel/subscription ports and certificates are
+    # already written. Wait for systemd to report an actually active service.
+    x-ui start >/dev/null 2>&1 || true
+    if ! wait_for_xui_active 15; then
+        msg_err "X-UI did not become active after final DB/config initialization."
+        systemctl status x-ui --no-pager -l 2>/dev/null || true
+        journalctl -u x-ui -n 40 --no-pager 2>/dev/null || true
+        return 1
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2663,41 +3015,479 @@ install_fake_site() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SYSTEM TUNING (BBR + kernel params)
+# AMNEZIAWG / PANEL BBR COMPATIBILITY
+#
+# The official LucX AWG installer is bundled inside the panel tarball. Its
+# original performance file also writes BBR + fq. That would compete with the
+# panel-owned 99-bbr-x-ui.conf, so Pro patches only those two assignments out
+# and leaves the AWG-specific TCP buffers/backlog in 99-awg-performance.conf.
 # ─────────────────────────────────────────────────────────────────────────────
-configure_runtime_qdisc() {
-    local qdisc="$1" helper=/usr/local/sbin/lucx-apply-qdisc
+LUCX_AWG_INSTALLER=/usr/local/x-ui/bin/install-awg-module.sh
+LUCX_AWG_SYSCTL=/etc/sysctl.d/99-awg-performance.conf
+LUCX_AWG_GUARD=/usr/local/sbin/lucx-awg-sysctl-guard
+LUCX_AWG_GUARD_SERVICE=/etc/systemd/system/lucx-awg-sysctl-guard.service
+LUCX_AWG_GUARD_PATH=/etc/systemd/system/lucx-awg-sysctl-guard.path
 
-    # net.core.default_qdisc only affects qdiscs created after the sysctl is
-    # applied. VPS interfaces often already exist by then, so apply the chosen
-    # qdisc to every interface carrying a default route and repeat it after
-    # network-online on each boot.
-    mkdir -p /usr/local/sbin
-    cat > "$helper" <<EOF
+patch_awg_installer() {
+    local script="${1:-$LUCX_AWG_INSTALLER}"
+    [[ -f "$script" ]] || return 1
+    python3 - "$script" <<'PY_AWG_PATCH'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8", errors="surrogateescape").read()
+# Remove only the two persistent BBR/qdisc assignments. AWG performance
+# buffers/backlog remain intact. Repeated patching is intentionally idempotent.
+new = re.sub(r'(?m)^\s*net\.core\.default_qdisc\s*=\s*fq\s*$\n?', '', text)
+new = re.sub(r'(?m)^\s*net\.ipv4\.tcp_congestion_control\s*=\s*bbr\s*$\n?', '', new)
+if new != text:
+    open(path, "w", encoding="utf-8", errors="surrogateescape").write(new)
+PY_AWG_PATCH
+    chmod +x "$script" 2>/dev/null || true
+}
+
+sanitize_awg_sysctl_file() {
+    [[ -f "$LUCX_AWG_SYSCTL" ]] || return 0
+
+    # Remove BBR/FQ ownership from the AWG-specific file. Keep the AWG buffers.
+    sed -i -E \
+        -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=[[:space:]]*fq[[:space:]]*$/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$/d' \
+        "$LUCX_AWG_SYSCTL"
+
+    # The panel remains the sole owner of BBR/FQ. If it has a BBR file, apply
+    # that state; otherwise the AWG installer must not re-enable BBR implicitly.
+    if [[ -f "$LUCX_BBR_FILE" ]]; then
+        sysctl -p "$LUCX_BBR_FILE" >/dev/null 2>&1 || true
+    fi
+}
+
+install_awg_sysctl_guard() {
+    mkdir -p /usr/local/sbin /etc/systemd/system
+
+    cat > "$LUCX_AWG_GUARD" <<'EOF'
 #!/bin/bash
 set -u
-QDISC='$qdisc'
+SCRIPT=/usr/local/x-ui/bin/install-awg-module.sh
+SYSCTL=/etc/sysctl.d/99-awg-performance.conf
+
+# Keep the panel's install-awg wrapper BBR-neutral even after a panel update.
+for XUI in /usr/bin/x-ui /usr/local/x-ui/x-ui.sh; do
+    [[ -f "$XUI" ]] || continue
+    python3 - "$XUI" <<'PY_GUARD_XUI'
+import sys
+path=sys.argv[1]
+text=open(path,encoding="utf-8",errors="surrogateescape").read()
+start=text.find("install_awg_module() {")
+if start < 0:
+    raise SystemExit(0)
+end=text.find("\nuninstall_awg_module()", start)
+if end < 0:
+    raise SystemExit(0)
+block=text[start:end]
+if 'lucx-awg-sysctl-guard' not in block and 'bash "$script" "$@"' in block:
+    block=block.replace(
+        '    bash "$script" "$@"\n',
+        '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
+        '    bash "$script" "$@"\n'
+        '    local rc=$?\n'
+        '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
+        '    return $rc\n',1)
+    text=text[:start]+block+text[end:]
+    open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
+PY_GUARD_XUI
+    chmod +x "$XUI" 2>/dev/null || true
+done
+
+if [[ -f "$SCRIPT" ]] && grep -Eq '^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=[[:space:]]*fq[[:space:]]*$|^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$' "$SCRIPT"; then
+    sed -i -E \
+        -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=[[:space:]]*fq[[:space:]]*$/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$/d' \
+        "$SCRIPT"
+fi
+
+if [[ -f "$SYSCTL" ]] && grep -Eq '^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=[[:space:]]*fq[[:space:]]*$|^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$' "$SYSCTL"; then
+    sed -i -E \
+        -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=[[:space:]]*fq[[:space:]]*$/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=[[:space:]]*bbr[[:space:]]*$/d' \
+        "$SYSCTL"
+    if [[ -f /etc/sysctl.d/99-bbr-x-ui.conf ]]; then
+        sysctl -p /etc/sysctl.d/99-bbr-x-ui.conf >/dev/null 2>&1 || true
+    elif [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)" == "bbr" ]]; then
+        restore=/etc/x-ui/.lucx-bbr-restore
+        qdisc=fq_codel
+        cc=cubic
+        if [[ -s "$restore" ]]; then
+            saved=$(tr -d '[:space:]' < "$restore" 2>/dev/null || true)
+            case "$saved" in
+                fq:*|fq_codel:*|cake:*|pfifo_fast:*) qdisc=${saved%%:*}; cc=${saved#*:} ;;
+            esac
+            [[ "$cc" == bbr || -z "$cc" ]] && cc=cubic
+        fi
+        sysctl -w "net.core.default_qdisc=$qdisc" >/dev/null 2>&1 || true
+        sysctl -w "net.ipv4.tcp_congestion_control=$cc" >/dev/null 2>&1 || true
+    fi
+fi
+EOF
+    chmod 0755 "$LUCX_AWG_GUARD"
+
+    cat > "$LUCX_AWG_GUARD_SERVICE" <<'EOF'
+[Unit]
+Description=Keep LucX AWG sysctl installer BBR-neutral
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lucx-awg-sysctl-guard
+EOF
+
+    cat > "$LUCX_AWG_GUARD_PATH" <<'EOF'
+[Unit]
+Description=Watch LucX AWG installer and performance sysctl
+
+[Path]
+PathChanged=/usr/local/x-ui/bin/install-awg-module.sh
+PathChanged=/etc/sysctl.d/99-awg-performance.conf
+PathChanged=/usr/bin/x-ui
+PathChanged=/usr/local/x-ui/x-ui.sh
+Unit=lucx-awg-sysctl-guard.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable lucx-awg-sysctl-guard.path >/dev/null 2>&1 || true
+    systemctl start lucx-awg-sysctl-guard.service >/dev/null 2>&1 || true
+    systemctl start lucx-awg-sysctl-guard.path >/dev/null 2>&1 || true
+}
+
+patch_panel_bbr_script() {
+    local script
+    for script in /usr/bin/x-ui /usr/local/x-ui/x-ui.sh; do
+        [[ -f "$script" ]] || continue
+        python3 - "$script" <<'PY_BBR_PATCH'
+import sys
+path=sys.argv[1]
+text=open(path,encoding="utf-8",errors="surrogateescape").read()
+old="""enable_bbr() {
+    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) == "bbr" ]] && [[ $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then"""
+new="""enable_bbr() {
+    # Pro persists BBR/FQ modules, but load them immediately as well so the
+    # panel toggle works even if the module was not auto-loaded yet.
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+    modprobe sch_fq >/dev/null 2>&1 || true
+    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) == "bbr" ]] && [[ $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then"""
+if old in text and 'modprobe tcp_bbr >/dev/null 2>&1 || true' not in text:
+    text=text.replace(old,new,1)
+needle="""        {
+            echo "#$(sysctl -n net.core.default_qdisc):$(sysctl -n net.ipv4.tcp_congestion_control)"
+            echo "net.core.default_qdisc = fq"""
+repl="""        mkdir -p /etc/x-ui
+        printf '%s:%s\\n' "$(sysctl -n net.core.default_qdisc)" "$(sysctl -n net.ipv4.tcp_congestion_control)" > /etc/x-ui/.lucx-bbr-restore
+        {
+            echo "#$(sysctl -n net.core.default_qdisc):$(sysctl -n net.ipv4.tcp_congestion_control)"
+            echo "net.core.default_qdisc = fq"""
+if needle in text and '/etc/x-ui/.lucx-bbr-restore' not in text:
+    text=text.replace(needle,repl,1)
+needle2="""        sysctl -w net.ipv4.tcp_congestion_control=\"${old_settings#*:}\"
+        rm /etc/sysctl.d/99-bbr-x-ui.conf"""
+repl2="""        sysctl -w net.ipv4.tcp_congestion_control=\"${old_settings#*:}\"
+        mkdir -p /etc/x-ui
+        printf '%s\\n' \"$old_settings\" > /etc/x-ui/.lucx-bbr-restore
+        rm /etc/sysctl.d/99-bbr-x-ui.conf"""
+if needle2 in text and "printf '%s\\n' \"$old_settings\" > /etc/x-ui/.lucx-bbr-restore" not in text:
+    text=text.replace(needle2,repl2,1)
+open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
+PY_BBR_PATCH
+        chmod +x "$script" 2>/dev/null || true
+    done
+}
+
+patch_panel_awg_command() {
+    local script
+    for script in /usr/bin/x-ui /usr/local/x-ui/x-ui.sh; do
+        [[ -f "$script" ]] || continue
+        python3 - "$script" <<'PY_AWG_CMD_PATCH'
+import sys
+path=sys.argv[1]
+text=open(path,encoding="utf-8",errors="surrogateescape").read()
+start=text.find("install_awg_module() {")
+if start < 0:
+    raise SystemExit(0)
+end=text.find("\nuninstall_awg_module()", start)
+if end < 0:
+    raise SystemExit(0)
+block=text[start:end]
+if 'lucx-awg-sysctl-guard' not in block and 'bash "$script" "$@"' in block:
+    block=block.replace(
+        '    bash "$script" "$@"\n',
+        '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
+        '    bash "$script" "$@"\n'
+        '    local rc=$?\n'
+        '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
+        '    return $rc\n',1)
+    text=text[:start]+block+text[end:]
+    open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
+PY_AWG_CMD_PATCH
+        chmod +x "$script" 2>/dev/null || true
+    done
+}
+
+install_awg_kernel() {
+    local script="$LUCX_AWG_INSTALLER"
+    [[ -x "$script" ]] || {
+        msg_err "AmneziaWG installer is missing: $script"
+        return 1
+    }
+
+    # Critical: patch the bundled upstream installer BEFORE it can generate
+    # 99-awg-performance.conf. This also protects later x-ui install-awg calls.
+    if ! patch_awg_installer "$script"; then
+        msg_err "Failed to make the AmneziaWG installer BBR-neutral."
+        return 1
+    fi
+
+    install_awg_sysctl_guard
+    sanitize_awg_sysctl_file
+
+    msg_inf "Installing AmneziaWG kernel module/tools via bundled LucX installer..."
+    if ! bash "$script"; then
+        msg_err "AmneziaWG installation failed; panel installation will continue, but AWG may be unavailable."
+        return 0
+    fi
+
+    # The official installer may have refreshed the performance file. Sanitize
+    # it once more and then let the panel-owned BBR state win.
+    patch_awg_installer "$script" || true
+    sanitize_awg_sysctl_file
+    install_awg_sysctl_guard
+    return 0
+}
+
+maybe_reboot_for_awg() {
+    [[ -f /etc/x-ui/.awg-reboot-needed ]] || return 0
+
+    local ans=""
+    if [[ -r /dev/tty ]]; then
+        while true; do
+            echo
+            msg_inf "────────────────────────────────────────────────────────────────────────────────"
+            msg_inf "Перезагрузка системы? (необходимо для AmneziaWG kernel)"
+            echo '  1) Да'
+            echo '  2) Нет'
+            msg_inf "────────────────────────────────────────────────────────────────────────────────"
+            echo -en 'Выбор [1-2]: '
+            read -r ans </dev/tty || ans=""
+            case "${ans// /}" in
+                1)
+                    rm -f /etc/x-ui/.awg-reboot-needed
+                    echo
+                    msg_inf "Перезагрузка системы..."
+                    reboot || msg_err "Не удалось выполнить перезагрузку; перезагрузите сервер вручную."
+                    return 0
+                    ;;
+                2)
+                    rm -f /etc/x-ui/.awg-reboot-needed
+                    msg_inf "Перезагрузка пропущена. Она необходима для загрузки нового ядра AmneziaWG."
+                    return 0
+                    ;;
+                *) continue ;;
+            esac
+        done
+    else
+        # No controlling terminal: never reboot automatically. The marker is
+        # consumed so a non-interactive install cannot unexpectedly reboot later.
+        rm -f /etc/x-ui/.awg-reboot-needed
+        msg_inf "Перезагрузка пропущена: нет интерактивного терминала. Она необходима для нового ядра AmneziaWG."
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SYSTEM TUNING (BBR module persistence + kernel params)
+#
+# Ownership model:
+#   - LucX panel owns BBR/FQ sysctl state in 99-bbr-x-ui.conf.
+#   - Pro owns only kernel-module loading/persistence and the other tuning
+#     parameters.
+#   - The runtime qdisc helper reads net.core.default_qdisc at execution time,
+#     so it never hardcodes a qdisc chosen by the panel.
+# ─────────────────────────────────────────────────────────────────────────────
+LUCX_MODULES_FILE=/etc/modules-load.d/lucx-ui-network.conf
+LUCX_LEGACY_MODULES_FILE=/etc/modules-load.d/tcp-bbr.conf
+LUCX_TUNING_FILE=/etc/sysctl.d/99-zz-lucx-ui-tuning.conf
+LUCX_BBR_FILE=/etc/sysctl.d/99-bbr-x-ui.conf
+
+persist_network_modules() {
+    local modules=() current_qdisc qdisc_module module
+
+    mkdir -p /etc/modules-load.d
+
+    # Always try the BBR/FQ modules because the panel may enable BBR later.
+    # Persist only what the kernel actually exposes.
+    if modprobe tcp_bbr 2>/dev/null; then
+        modules+=(tcp_bbr)
+    fi
+    if modprobe sch_fq 2>/dev/null; then
+        modules+=(sch_fq)
+    fi
+
+    # Also persist the module for the qdisc that is currently configured.
+    # This matters when the panel later disables BBR and restores the
+    # pre-BBR qdisc (commonly fq_codel, which can itself be a module).
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || true)
+    case "$current_qdisc" in
+        fq_codel) qdisc_module=sch_fq_codel ;;
+        cake)     qdisc_module=sch_cake ;;
+        fq)       qdisc_module=sch_fq ;;
+        *)        qdisc_module="" ;;
+    esac
+    if [[ -n "$qdisc_module" ]] && modprobe "$qdisc_module" 2>/dev/null; then
+        modules+=("$qdisc_module")
+    fi
+
+    # Deduplicate while preserving order.
+    if [[ ${#modules[@]} -gt 0 ]]; then
+        mapfile -t modules < <(printf '%s\n' "${modules[@]}" | awk 'NF && !seen[$0]++')
+        printf '%s\n' "${modules[@]}" > "$LUCX_MODULES_FILE"
+        chmod 0644 "$LUCX_MODULES_FILE"
+    else
+        rm -f "$LUCX_MODULES_FILE"
+    fi
+
+    # Remove the old Pro-specific filename so the same module is not managed
+    # by two files after an upgrade. This file belongs to older Pro releases.
+    rm -f "$LUCX_LEGACY_MODULES_FILE"
+}
+
+migrate_legacy_bbr_sysctl() {
+    # Old Pro releases stored BBR/FQ in our late sysctl file. If that legacy
+    # file says BBR was enabled and the panel has no own file yet, migrate the
+    # active state to the panel-owned file first. The exact pre-BBR values were
+    # not stored by old Pro versions, so use the standard upstream fallback.
+    [[ -f "$LUCX_TUNING_FILE" ]] || return 0
+
+    local legacy_cc legacy_qdisc
+    legacy_cc=$(awk -F= '$1 ~ /^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$LUCX_TUNING_FILE")
+    legacy_qdisc=$(awk -F= '$1 ~ /^[[:space:]]*net\.core\.default_qdisc[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$LUCX_TUNING_FILE")
+
+    if [[ ! -f "$LUCX_BBR_FILE" && "$legacy_cc" == "bbr" && "$legacy_qdisc" == "fq" ]]; then
+        mkdir -p /etc/sysctl.d
+        {
+            echo "#fq_codel:cubic"
+            echo "net.core.default_qdisc = fq"
+            echo "net.ipv4.tcp_congestion_control = bbr"
+        } > "$LUCX_BBR_FILE"
+        chmod 0644 "$LUCX_BBR_FILE"
+    fi
+
+    sed -i -E \
+        -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' \
+        -e '/^[[:space:]]*net\.ipv4\.tcp_congestion_control[[:space:]]*=/d' \
+        "$LUCX_TUNING_FILE"
+}
+
+seed_panel_bbr_state() {
+    local current_cc current_qdisc available_cc
+    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo cubic)
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo fq_codel)
+    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+
+    # If the panel already owns a BBR config, do not overwrite it. The user
+    # may have explicitly enabled/disabled BBR through the panel menu.
+    if [[ -f "$LUCX_BBR_FILE" ]]; then
+        return 0
+    fi
+
+    # Automatically preserve the old Pro behaviour on a fresh installation:
+    # when the kernel supports BBR + fq, create the panel-owned config and
+    # apply it. After this point the panel is the sole owner of these sysctls.
+    if grep -qw bbr <<< "$available_cc" &&
+       modprobe tcp_bbr 2>/dev/null &&
+       modprobe sch_fq 2>/dev/null &&
+       sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 &&
+       sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
+        mkdir -p /etc/sysctl.d
+        mkdir -p /etc/x-ui
+        printf '%s:%s\n' "$current_qdisc" "$current_cc" > /etc/x-ui/.lucx-bbr-restore
+        {
+            echo "#${current_qdisc}:${current_cc}"
+            echo "net.core.default_qdisc = fq"
+            echo "net.ipv4.tcp_congestion_control = bbr"
+        } > "$LUCX_BBR_FILE"
+        chmod 0644 "$LUCX_BBR_FILE"
+        # Re-apply through the same file the panel's own enable_bbr() uses.
+        sysctl -p "$LUCX_BBR_FILE" >/dev/null 2>&1 || return 1
+        msg_ok "TCP tuning: BBR + fq enabled (panel-owned config)."
+        return 0
+    fi
+
+    # BBR is unavailable on this kernel. Do not create a panel BBR file and do
+    # not persist BBR sysctl keys in Pro. The distro/current kernel fallback
+    # remains authoritative until the user enables BBR from the panel later.
+    local fallback_cc fallback_qdisc qdisc
+    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+
+    if grep -qw cubic <<< "$available_cc"; then
+        fallback_cc=cubic
+    elif grep -qw "$current_cc" <<< "$available_cc"; then
+        fallback_cc="$current_cc"
+    else
+        fallback_cc="${available_cc%% *}"
+    fi
+    [[ -n "$fallback_cc" ]] || fallback_cc="$current_cc"
+    sysctl -w "net.ipv4.tcp_congestion_control=${fallback_cc}" >/dev/null 2>&1 || true
+
+    modprobe sch_fq_codel 2>/dev/null || true
+    fallback_qdisc=""
+    for qdisc in fq_codel "$current_qdisc" pfifo_fast; do
+        [[ -n "$qdisc" ]] || continue
+        if sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null 2>&1; then
+            fallback_qdisc="$qdisc"
+            break
+        fi
+    done
+
+    if [[ -n "$fallback_qdisc" ]]; then
+        msg_inf "BBR is unavailable; using ${fallback_cc} + ${fallback_qdisc}."
+    else
+        msg_inf "BBR is unavailable; keeping the current kernel qdisc."
+    fi
+}
+
+configure_runtime_qdisc() {
+    local helper=/usr/local/sbin/lucx-apply-qdisc
+
+    # net.core.default_qdisc only affects qdiscs created after the sysctl is
+    # applied. VPS interfaces often already exist by then, so apply the
+    # currently selected qdisc to every interface carrying a default route and
+    # repeat it after network-online on each boot. The helper reads the current
+    # sysctl every time instead of storing its own qdisc policy.
+    mkdir -p /usr/local/sbin
+    cat > "$helper" <<'EOF'
+#!/bin/bash
+set -u
+QDISC="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+[[ -n "$QDISC" ]] || QDISC=fq_codel
 
 get_default_ifaces() {
     ip -o route show default 2>/dev/null |
-        awk '{ for (i = 1; i <= NF; i++) if (\$i == "dev" && (i + 1) <= NF) { print \$(i + 1); break } }' |
+        awk '{ for (i = 1; i <= NF; i++) if ($i == "dev" && (i + 1) <= NF) { print $(i + 1); break } }' |
         sort -u
 }
 
 ifaces=""
 for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-    ifaces=\$(get_default_ifaces)
-    [[ -n "\$ifaces" ]] && break
+    ifaces=$(get_default_ifaces)
+    [[ -n "$ifaces" ]] && break
     sleep 2
 done
 
-[[ -n "\$ifaces" ]] || exit 1
+[[ -n "$ifaces" ]] || exit 1
 status=0
 while IFS= read -r iface; do
-    [[ -n "\$iface" && -e "/sys/class/net/\$iface" ]] || continue
-    tc qdisc replace dev "\$iface" root "\$QDISC" || status=1
-done <<< "\$ifaces"
-exit "\$status"
+    [[ -n "$iface" && -e "/sys/class/net/$iface" ]] || continue
+    tc qdisc replace dev "$iface" root "$QDISC" || status=1
+done <<< "$ifaces"
+exit "$status"
 EOF
     chmod 0755 "$helper"
 
@@ -2716,71 +3506,51 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
+    # Keep the runtime qdisc in sync with panel BBR toggles. The panel changes
+    # 99-bbr-x-ui.conf and the live sysctl values; this path unit immediately
+    # re-runs the helper so existing interfaces follow the new qdisc too.
+    cat > /etc/systemd/system/lucx-qdisc-sync.service <<'EOF'
+[Unit]
+Description=Sync LucX qdisc after sysctl policy changes
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/lucx-apply-qdisc
+EOF
+
+    cat > /etc/systemd/system/lucx-qdisc-sync.path <<'EOF'
+[Unit]
+Description=Watch LucX sysctl policy for qdisc changes
+
+[Path]
+PathChanged=/etc/sysctl.d
+Unit=lucx-qdisc-sync.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     systemctl daemon-reload
     systemctl enable lucx-apply-qdisc.service >/dev/null 2>&1 || return 1
+    systemctl enable lucx-qdisc-sync.path >/dev/null 2>&1 || return 1
+    systemctl start lucx-qdisc-sync.path >/dev/null 2>&1 || return 1
     "$helper" || return 1
 }
 
 tune_system() {
-    # Prefer BBR + fq when the kernel really supports both. On restricted VPS
-    # kernels fall back to cubic + fq_codel (or other currently supported
-    # values) instead of aborting the whole installation.
-    local current_cc current_qdisc available_cc selected_cc selected_qdisc qdisc
-    local active_cc active_qdisc
-    current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo cubic)
-    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo fq_codel)
-    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+    # Pro manages module loading/persistence; the panel owns persistent BBR/FQ
+    # sysctl state. Other kernel tuning stays in our dedicated sysctl file.
+    persist_network_modules
+    migrate_legacy_bbr_sysctl
+    seed_panel_bbr_state || return 1
+    # seed_panel_bbr_state may choose a fallback qdisc (for example fq_codel)
+    # when BBR is unavailable. Persist the module for that final qdisc too.
+    persist_network_modules
 
-    mkdir -p /etc/modules-load.d
-    echo tcp_bbr > /etc/modules-load.d/tcp-bbr.conf
-    modprobe tcp_bbr 2>/dev/null || true
-    modprobe sch_fq 2>/dev/null || true
-
-    if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr &&
-       sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 &&
-       sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1; then
-        selected_cc=bbr
-        selected_qdisc=fq
-        msg_ok "TCP tuning: BBR + fq enabled."
-    else
-        # Avoid retrying an unavailable BBR module on every boot.
-        rm -f /etc/modules-load.d/tcp-bbr.conf
-        available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
-
-        if grep -qw cubic <<< "$available_cc"; then
-            selected_cc=cubic
-        elif grep -qw "$current_cc" <<< "$available_cc"; then
-            selected_cc="$current_cc"
-        else
-            selected_cc="${available_cc%% *}"
-        fi
-        [[ -n "$selected_cc" ]] || selected_cc="$current_cc"
-
-        if ! sysctl -w "net.ipv4.tcp_congestion_control=${selected_cc}" >/dev/null 2>&1; then
-            msg_err "No supported TCP congestion-control algorithm could be selected."
-            return 1
-        fi
-
-        modprobe sch_fq_codel 2>/dev/null || true
-        selected_qdisc=""
-        for qdisc in fq_codel "$current_qdisc" fq pfifo_fast; do
-            [[ -n "$qdisc" ]] || continue
-            if sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null 2>&1; then
-                selected_qdisc="$qdisc"
-                break
-            fi
-        done
-        if [[ -z "$selected_qdisc" ]]; then
-            msg_err "No supported default qdisc could be selected."
-            return 1
-        fi
-
-        msg_inf "BBR is unavailable; using ${selected_cc} + ${selected_qdisc}."
-    fi
-
-    # Migrate values written by older versions out of /etc/sysctl.conf.  Some
-    # Debian images do not process that legacy file during boot, so keep all
-    # LucX tuning in a dedicated late-loading sysctl.d file.
+    # Migrate values written by older versions out of /etc/sysctl.conf. Keep
+    # BBR/FQ out of this file so the panel remains the sole persistent owner.
     touch /etc/sysctl.conf
     sed -i -E \
         -e '/^[[:space:]]*net\.core\.default_qdisc[[:space:]]*=/d' \
@@ -2789,40 +3559,31 @@ tune_system() {
         -e '/^[[:space:]]*net\.ipv4\.tcp_timestamps[[:space:]]*=/d' \
         -e '/^[[:space:]]*net\.ipv4\.tcp_sack[[:space:]]*=/d' \
         -e '/^[[:space:]]*net\.ipv4\.tcp_window_scaling[[:space:]]*=/d' \
-        -e '/^[[:space:]]*net\.core\.rmem_max[[:space:]]*=/d' \
-        -e '/^[[:space:]]*net\.core\.wmem_max[[:space:]]*=/d' \
-        -e '/^[[:space:]]*net\.ipv4\.tcp_rmem[[:space:]]*=/d' \
-        -e '/^[[:space:]]*net\.ipv4\.tcp_wmem[[:space:]]*=/d' \
         /etc/sysctl.conf
 
     local params=(
-        "net.core.default_qdisc=${selected_qdisc}"
-        "net.ipv4.tcp_congestion_control=${selected_cc}"
         "fs.file-max=2097152"
         "net.ipv4.tcp_timestamps=1"
         "net.ipv4.tcp_sack=1"
         "net.ipv4.tcp_window_scaling=1"
-        "net.core.rmem_max=16777216"
-        "net.core.wmem_max=16777216"
-        "net.ipv4.tcp_rmem=4096 87380 16777216"
-        "net.ipv4.tcp_wmem=4096 65536 16777216"
     )
     mkdir -p /etc/sysctl.d
-    printf '%s\n' "${params[@]}" > /etc/sysctl.d/99-zz-lucx-ui-tuning.conf
-    if ! sysctl -p /etc/sysctl.d/99-zz-lucx-ui-tuning.conf; then
+    printf '%s\n' "${params[@]}" > "$LUCX_TUNING_FILE"
+    if ! sysctl -p "$LUCX_TUNING_FILE"; then
         msg_err "Failed to apply system tuning parameters."
         return 1
     fi
 
+    local active_cc active_qdisc
     active_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
     active_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || true)
-    if [[ "$active_cc" != "$selected_cc" || "$active_qdisc" != "$selected_qdisc" ]]; then
-        msg_err "TCP tuning verification failed: expected ${selected_cc} + ${selected_qdisc}, got ${active_cc:-unknown} + ${active_qdisc:-unknown}."
+    [[ -n "$active_cc" && -n "$active_qdisc" ]] || {
+        msg_err "TCP tuning verification failed: kernel did not expose congestion-control/qdisc state."
         return 1
-    fi
+    }
 
-    if ! configure_runtime_qdisc "$selected_qdisc"; then
-        msg_err "Failed to apply ${selected_qdisc} to the active default-route interface."
+    if ! configure_runtime_qdisc; then
+        msg_err "Failed to apply the current qdisc to the active default-route interface."
         return 1
     fi
 
@@ -2831,15 +3592,15 @@ tune_system() {
         [[ -n "$iface" ]] || continue
         iface_qdisc=$(tc qdisc show dev "$iface" 2>/dev/null |
             awk '$4 == "root" { print $2; exit }')
-        if [[ "$iface_qdisc" != "$selected_qdisc" ]]; then
-            msg_err "Qdisc verification failed on ${iface}: expected ${selected_qdisc}, got ${iface_qdisc:-unknown}."
+        if [[ "$iface_qdisc" != "$active_qdisc" ]]; then
+            msg_err "Qdisc verification failed on ${iface}: expected ${active_qdisc}, got ${iface_qdisc:-unknown}."
             return 1
         fi
     done < <(ip -o route show default 2>/dev/null |
         awk '{ for (i = 1; i <= NF; i++) if ($i == "dev" && (i + 1) <= NF) { print $(i + 1); break } }' |
         sort -u)
 
-    msg_ok "TCP tuning verified: ${active_cc} + ${active_qdisc}."
+    msg_ok "TCP tuning verified: ${active_cc} + ${active_qdisc}; kernel modules persisted in ${LUCX_MODULES_FILE}."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2881,6 +3642,7 @@ GEOUPD
     chmod +x "$dest"
 }
 
+
 setup_cron() {
     # Minimal Debian/Ubuntu images may not include the `crontab` command.
     # Install it here as a safeguard as well as in install_packages(), so this
@@ -2891,7 +3653,7 @@ setup_cron() {
     fi
 
     systemctl enable --now cron 2>/dev/null || true
-    crontab -l 2>/dev/null | grep -vE 'certbot|x-ui|cloudflareips|update-geodata|nginx -s reload' | crontab - || true
+    remove_lucx_cron_jobs
     install_geodata_updater
     (crontab -l 2>/dev/null; echo '0 4 * * 0 /usr/local/x-ui/update-geodata.sh >/dev/null 2>&1') | crontab -
     (crontab -l 2>/dev/null; echo '0 1 * * * certbot renew --non-interactive --pre-hook "systemctl stop nginx" --deploy-hook "x-ui restart" --post-hook "systemctl start nginx" >/dev/null 2>&1') | crontab -
@@ -2963,17 +3725,32 @@ show_results() {
 # ─────────────────────────────────────────────────────────────────────────────
 main() {
     choose_adguard || return 1
-    choose_rkn_guard || return 1
     choose_xray_dns || return 1
+    choose_rkn_guard || return 1
     choose_extra_inbounds || return 1
     choose_webproxy_domain || return 1
 
     # Install base packages only after all initial questions are answered.
+    [[ ! -e /opt/AdGuardHome && ! -e /usr/local/bin/rkn-guard ]] || {
+        msg_err "Existing AdGuard/rkn-guard is not owned by this installer."
+        return 1
+    }
+    { modinfo amneziawg >/dev/null 2>&1 || [[ -e /etc/modules-load.d/amneziawg.conf ]]; } && {
+        mkdir -p "$PREINSTALL_STATE_DIR"
+        touch "$PREINSTALL_STATE_DIR/awg-preexisting"
+    }
+    save_preinstall_state || return 1
     install_base_dependencies || return 1
-    save_firewall_state || return 1
+    mark_install_in_progress
     clean_previous_install || return 1
     install_packages || return 1
     get_server_ip || return 1
+    printf '%s\n' "$domain" "$reality_domain" "${webproxy_domain:-}" | sed '/^$/d' > "$PREINSTALL_STATE_DIR/domains"
+    : > "$PREINSTALL_STATE_DIR/new-certificates"
+    local cert
+    while IFS= read -r cert; do
+        [[ -e "/etc/letsencrypt/live/$cert" ]] || printf '%s\n' "$cert" >> "$PREINSTALL_STATE_DIR/new-certificates"
+    done < "$PREINSTALL_STATE_DIR/domains"
     get_ssl_certs || return 1
     if systemctl is-active --quiet x-ui; then
         x-ui restart || return 1
@@ -2981,35 +3758,69 @@ main() {
         install_panel || return 1
     fi
 
+    # AWG is optional on a fresh install. The guard and panel wrapper are
+    # installed regardless, so a later `x-ui install-awg` remains BBR-neutral.
+    install_awg_sysctl_guard
+    patch_panel_awg_command
+    if [[ "${DEPLOY_AWG}" == "y" ]]; then
+        install_awg_kernel || return 1
+    else
+        msg_inf "AmneziaWG installation skipped. It can be installed later via: x-ui install-awg"
+    fi
+    patch_panel_bbr_script
+
     configure_nginx || return 1
     if [[ "${DEPLOY_AGH}" == "1" ]]; then
         install_adguard || return 1
+        touch "$PREINSTALL_STATE_DIR/adguard-installed"
     fi
     configure_xui_db || return 1
+    setup_fail2ban || return 1
     install_fake_site || return 1
     install_tproxy_site || return 1
     tune_system || return 1
+    patch_panel_bbr_script
+    patch_panel_awg_command
     setup_cron || return 1
     setup_firewall || return 1
     if [[ "${DEPLOY_RKN}" == "1" || "${DEPLOY_RKN}" == "2" ]]; then
         install_rkn_guard "${DEPLOY_RKN}" || return 1
+        touch "$PREINSTALL_STATE_DIR/rkn-installed"
     fi
 
     if ! systemctl is-enabled --quiet x-ui; then
         systemctl daemon-reload && systemctl enable x-ui.service || return 1
     fi
-    x-ui restart || return 1
+    restart_xui_wait || return 1
 
     apply_xray_dns || return 1
     insert_hy2_inbound || return 1
     insert_extra_inbound || return 1
-    x-ui restart || return 1
+    restart_xui_wait || return 1
+    # Final service state is authoritative after the readiness helper.
+    if ! systemctl is-active --quiet x-ui; then
+        msg_err "LucX-UI failed to stay active after final configuration."
+        systemctl status x-ui --no-pager -l 2>/dev/null || true
+        journalctl -u x-ui -n 40 --no-pager 2>/dev/null || true
+        return 1
+    fi
 
     show_results || return 1
+    # The installation is now complete. Remove the crash-recovery marker before
+    # the optional AWG reboot prompt so a manual rerun never repeats cleanup.
+    clear_install_in_progress
+    if [[ "${DEPLOY_AWG}" == "y" ]]; then
+        maybe_reboot_for_awg
+    fi
 }
 
+if ! is_full_install_request && [[ ! -f "$PREINSTALL_STATE_DIR/owned-by-lucx-ui-pro" ]]; then
+    msg_err "Component maintenance requires an installation owned by this script."
+    exit 1
+fi
+
 if [[ "${TG_WEB_PROXY_UNINSTALL}" == "y" ]]; then
-    uninstall_tg_web_proxy 1
+    uninstall_tg_web_proxy
     exit $?
 fi
 if [[ "${TG_WEB_PROXY_ONLY}" == "y" ]]; then
@@ -3024,8 +3835,9 @@ if [[ "${RKN_GUARD_ONLY}" == "y" ]]; then
     choose_rkn_guard || exit $?
     case "${DEPLOY_RKN}" in
         1|2)
-            install_rkn_guard "${DEPLOY_RKN}"
-            exit $?
+            install_rkn_guard "${DEPLOY_RKN}" || exit $?
+            touch "$PREINSTALL_STATE_DIR/rkn-installed"
+            exit 0
             ;;
         3)
             msg_inf "Установка rkn-guard отменена."
@@ -3039,6 +3851,7 @@ if [[ "${ADGUARD_UNINSTALL}" == "y" ]]; then
 fi
 if [[ "${ADGUARD_ONLY}" == "y" ]]; then
     install_adguard || exit $?
+    touch "$PREINSTALL_STATE_DIR/adguard-installed"
     print_adguard_results || exit $?
     exit 0
 fi
