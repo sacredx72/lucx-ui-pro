@@ -427,6 +427,38 @@ PY_VERIFY_ARCHIVE
 }
 
 # ── restore ───────────────────────────────────────────────────────────────────
+repair_clash_template() {
+    [[ -f /var/www/subpage/clash.yaml.tpl ]] || return 0
+    python3 <<'PY_CLASH_RESTORE'
+from pathlib import Path
+import re
+
+path = Path('/var/www/subpage/clash.yaml.tpl')
+text = path.read_text(encoding='utf-8')
+original = text
+expression = '''        - '(select(.type == "vless" and .["reality-opts"] != null) | .["client-fingerprint"]) = "chrome"'\n'''
+anchor = '''        - '(select(.type == "vless" and .["reality-opts"] != null) | .["reality-opts"]["support-x25519mlkem768"]) = true'\n'''
+if expression not in text:
+    if text.count(anchor) != 1:
+        raise SystemExit('Unexpected Clash template; no changes made.')
+    text = text.replace(anchor, expression + anchor)
+text = text.replace('global-client-fingerprint: chrome\n', '')
+if '    path: ./proxy_providers/base64.yml\n' in text:
+    match = re.search(r'(?m)^    url: https://([^/\s]+)/([^/\s]+)/\$\{SUB_ID\}\?provider=1$', text)
+    if not match:
+        raise SystemExit('Unexpected provider URL; no changes made.')
+    domain, sub_path = match.groups()
+    text = text.replace('    path: ./proxy_providers/base64.yml\n',
+                        f'    path: ./proxy_providers/{domain}_{sub_path}_${{SUB_ID}}.yaml\n')
+provider_header = 'proxy-providers:\n  sub:\n    type: http\n'
+if provider_header + '    proxy: DIRECT\n' not in text:
+    text = text.replace(provider_header, provider_header + '    proxy: DIRECT\n')
+if text != original:
+    path.write_text(text, encoding='utf-8')
+    print('Restored Clash template updated for current Mihomo.')
+PY_CLASH_RESTORE
+}
+
 cmd_restore() {
     require_root
 
@@ -571,6 +603,7 @@ PY_META_AWG
     setup_fail2ban || true
     patch_panel_awg_command
     sanitize_awg_sysctl_file
+    repair_clash_template
 
     # ── panel cert symlinks (/root/cert/<domain> → letsencrypt) ──────────
     # Backups made before /root/cert was in BACKUP_PATHS lack the symlinks
