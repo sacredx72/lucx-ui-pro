@@ -3348,7 +3348,7 @@ EOF
     systemctl enable --now lucx-clash-sub.service || return 1
     local attempt
     for attempt in 1 2 3 4 5; do
-        if curl -fsS --max-time 2 "http://127.0.0.1:${clash_port}/health" >/dev/null; then
+        if curl -fsS --max-time 2 "http://127.0.0.1:${clash_port}/health" >/dev/null 2>&1; then
             msg_ok "Clash/Mihomo subscription ready."
             return 0
         fi
