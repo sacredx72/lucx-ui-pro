@@ -329,15 +329,41 @@ restore_awg_module() {
         fi
         return 0
     fi
-    [[ -x "$script" ]] || return 0
-    patch_awg_installer
+    if [[ ! -x "$script" ]]; then
+        red "AmneziaWG restore failed: bundled installer is missing or not executable: $script"
+        return 1
+    fi
+    patch_awg_installer || {
+        red "AmneziaWG restore failed: could not prepare the bundled installer"
+        return 1
+    }
     # A restored marker without the actual module would make the upstream
     # installer incorrectly skip DKMS. Remove the marker in that case.
     if ! modinfo amneziawg >/dev/null 2>&1; then
         rm -f /etc/x-ui/.awg-module-version
     fi
     echo "==> Restoring/building AmneziaWG module..."
-    bash "$script" --no-kernel-upgrade >/dev/null 2>&1 || true
+    local install_rc=0 tool
+    # Keep installer diagnostics visible; a failed build must not look successful.
+    bash "$script" --no-kernel-upgrade || install_rc=$?
+    if (( install_rc != 0 )); then
+        red "AmneziaWG restore failed: installer exited with code ${install_rc}"
+        return 1
+    fi
+    if ! modinfo amneziawg >/dev/null 2>&1; then
+        red "AmneziaWG restore failed: module is unavailable for the running kernel $(uname -r)"
+        return 1
+    fi
+    if ! modprobe amneziawg; then
+        red "AmneziaWG restore failed: module could not be loaded"
+        return 1
+    fi
+    for tool in awg awg-quick; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            red "AmneziaWG restore failed: required tool is missing: $tool"
+            return 1
+        fi
+    done
     patch_awg_installer
     for script in /usr/bin/x-ui /usr/local/x-ui/x-ui.sh; do
         [[ -f "$script" ]] || continue
@@ -477,7 +503,7 @@ cmd_restore() {
     (( have_kb >= unpacked_kb * 2 + 102400 )) || \
         die "Not enough free space in ${BACKUP_STORE}: need ~$(( (unpacked_kb * 2 + 102400) / 1024 )) MB, have $(( have_kb / 1024 )) MB"
 
-    local staging awg_installed_from_backup=0
+    local staging awg_installed_from_backup=0 awg_restore_failed=0
     staging=$(make_staging restore)
     RESTORE_STAGING="$staging"
     trap 'rm -rf -- "$RESTORE_STAGING"' EXIT
@@ -668,7 +694,10 @@ PY_TG_RESTORE
     fi
 
     # ── AmneziaWG / AWG-specific sysctl ──────────────────────────────────
-    restore_awg_module "${awg_installed_from_backup}"
+    if ! restore_awg_module "${awg_installed_from_backup}"; then
+        awg_restore_failed=1
+        red "AmneziaWG was not restored. Continuing to restore the other services."
+    fi
 
     # ── network tuning / modules ─────────────────────────────────────────
     # The panel owns persistent BBR/FQ sysctl state in 99-bbr-x-ui.conf.
@@ -844,6 +873,9 @@ PY_TG_RESTORE
     fi
 
     echo
+    if (( awg_restore_failed )); then
+        die "Restore incomplete: AmneziaWG could not be restored. Other components were restored; see the errors above."
+    fi
     green "==> Restore complete."
     green "    Check status with:"
     green "      systemctl status x-ui nginx"
