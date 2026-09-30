@@ -764,6 +764,20 @@ PY_TG_RESTORE
         green "    /etc/cron.d restored"
     fi
 
+    # Older archives contain a second RUNET scheduler. Keep the restored .dat
+    # files and Xray geodata configuration; retire only the legacy cron job.
+    if command -v crontab &>/dev/null; then
+        local geo_cron
+        geo_cron=$(mktemp "${staging}/geodata-cron.XXXXXX")
+        crontab -l > "$geo_cron" 2>/dev/null || true
+        if grep -Eq '^[[:space:]]*[^#].*/usr/local/x-ui/update-geodata\.sh([[:space:];]|$)' "$geo_cron"; then
+            awk '/^[[:space:]]*#/ || $0 !~ /\/usr\/local\/x-ui\/update-geodata\.sh([[:space:];]|$)/' "$geo_cron" > "${geo_cron}.new"
+            crontab "${geo_cron}.new" || die "Failed to remove legacy RUNET cron"
+        fi
+        rm -f "$geo_cron" "${geo_cron}.new"
+    fi
+    rm -f /usr/local/x-ui/update-geodata.sh
+
     # ── UFW ───────────────────────────────────────────────────────────────
     blue "==> Restoring UFW..."
     if [[ -f /etc/sysctl.d/99-lucx-ui-forwarding.conf ]]; then
