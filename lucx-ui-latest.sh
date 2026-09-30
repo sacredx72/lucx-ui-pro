@@ -2447,6 +2447,11 @@ EOF
 
     # Shared proxy locations for xray inbounds (included by both vhosts)
     cat > /etc/nginx/snippets/includes.conf <<EOF
+    # Dedicated Clash link displayed by the panel uses the same YAML renderer.
+    location ~ ^/mihomo/(?<panel_clash_sub_id>[^/]+)/?\$ {
+        if (\$hack = 1) { return 404; }
+        rewrite ^ /__lucx_clash?sub_id=\$panel_clash_sub_id last;
+    }
     #Subscription — prefix location covers all sub-paths (assets, JS, etc.)
     # One-level client URL: Clash/Mihomo gets YAML, other clients get panel output.
     location ~ ^/${sub_path}/(?<clash_sub_id>[^/]+)\$ {
@@ -2896,7 +2901,10 @@ UPDATE "settings" SET "value" = '/${sub_path}/' WHERE "key" = 'subPath';
 INSERT INTO "settings" ("key","value") VALUES ("subURI",              '${sub_uri}');
 UPDATE "settings" SET "value" = '/${json_path}/' WHERE "key" = 'subJsonPath';
 INSERT INTO "settings" ("key","value") VALUES ("subJsonURI",          '${json_uri}');
-INSERT INTO "settings" ("key","value") VALUES ("subClashEnable",      'false');
+DELETE FROM "settings" WHERE "key" IN ('subClashEnable','subClashPath','subClashURI');
+INSERT INTO "settings" ("key","value") VALUES ("subClashEnable",      'true');
+INSERT INTO "settings" ("key","value") VALUES ("subClashPath",        '/mihomo/');
+INSERT INTO "settings" ("key","value") VALUES ("subClashURI",         '${HP}/mihomo/');
 INSERT INTO "settings" ("key","value") VALUES ("subEnableRouting",    'false');
 INSERT INTO "settings" ("key","value") VALUES ("subEnable",           'true');
 INSERT INTO "settings" ("key","value") VALUES ("webListen",           '');
