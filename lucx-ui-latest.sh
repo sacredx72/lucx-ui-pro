@@ -2056,9 +2056,18 @@ uninstall_awg_kernel_full() {
 # UNINSTALL
 # ─────────────────────────────────────────────────────────────────────────────
 remove_lucx_cron_jobs() {
-    local geo='0 4 * * 0 /usr/local/x-ui/update-geodata.sh >/dev/null 2>&1'
     local cert='0 1 * * * certbot renew --non-interactive --pre-hook "systemctl stop nginx" --deploy-hook "x-ui restart" --post-hook "systemctl start nginx" >/dev/null 2>&1'
-    crontab -l 2>/dev/null | grep -vFx -e "$geo" -e "$cert" | crontab - || true
+    local cron_file
+    command -v crontab >/dev/null 2>&1 || return 0
+    cron_file=$(mktemp) || return 1
+    crontab -l > "$cron_file" 2>/dev/null || true
+    # Remove the old RUNET job at any schedule, preserving comments and other jobs.
+    awk -v cert="$cert" '$0 != cert && (/^[[:space:]]*#/ || $0 !~ /\/usr\/local\/x-ui\/update-geodata\.sh([[:space:];]|$)/)' "$cron_file" > "${cron_file}.new"
+    if ! crontab "${cron_file}.new"; then
+        rm -f "$cron_file" "${cron_file}.new"
+        return 1
+    fi
+    rm -f "$cron_file" "${cron_file}.new"
 }
 
 uninstall_xui() {
@@ -3970,43 +3979,6 @@ tune_system() {
 # ─────────────────────────────────────────────────────────────────────────────
 # CRON JOBS
 # ─────────────────────────────────────────────────────────────────────────────
-install_geodata_updater() {
-    local dest=/usr/local/x-ui/update-geodata.sh
-    mkdir -p /usr/local/x-ui
-    cat > "$dest" << 'GEOUPD'
-#!/bin/bash
-set -euo pipefail
-DEST=/usr/local/x-ui/bin
-mkdir -p "$DEST"
-RAW='https://raw.githubusercontent.com'
-GH='https://github.com'
-download_one_geo() {
-    local dest="$1" name="$2" url="$3" fallback="${4:-}" min_bytes="${5:-50000}"
-    local tmp http size head
-    tmp="${dest}/${name}.tmp.$$"
-    rm -f "$tmp"
-    http=$(curl -sSfLRo "$tmp" -z "${dest}/${name}" --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 180 -w '%{http_code}' "$url" || true)
-    if [[ "$http" == "304" ]]; then rm -f "$tmp"; return 0; fi
-    if [[ "$http" != "200" || ! -s "$tmp" ]]; then
-        rm -f "$tmp"
-        if [[ -n "$fallback" ]]; then
-            http=$(curl -sSfLRo "$tmp" --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 180 -w '%{http_code}' "$fallback" || true)
-        fi
-    fi
-    [[ "$http" == "200" && -s "$tmp" ]] || { rm -f "$tmp"; return 0; }
-    size=$(wc -c < "$tmp"); size=${size// /}
-    head=$(head -c 64 "$tmp" | tr -d '\0' || true)
-    if printf '%s' "$head" | grep -qiE '<html|<!doctype|^Not Found|^404'; then rm -f "$tmp"; return 0; fi
-    (( size >= min_bytes )) || { rm -f "$tmp"; return 0; }
-    mv -f "$tmp" "${dest}/${name}"
-}
-download_one_geo "$DEST" geoip_RUNET.dat "$RAW/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat" "$GH/runetfreedom/russia-v2ray-rules-dat/raw/release/geoip.dat" 50000 || true
-download_one_geo "$DEST" geosite_RUNET.dat "$RAW/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" "$GH/runetfreedom/russia-v2ray-rules-dat/raw/release/geosite.dat" 50000 || true
-GEOUPD
-    chmod +x "$dest"
-}
-
-
 setup_cron() {
     # Minimal Debian/Ubuntu images may not include the `crontab` command.
     # Install it here as a safeguard as well as in install_packages(), so this
@@ -4017,9 +3989,10 @@ setup_cron() {
     fi
 
     systemctl enable --now cron 2>/dev/null || true
-    remove_lucx_cron_jobs
-    install_geodata_updater
-    (crontab -l 2>/dev/null; echo '0 4 * * 0 /usr/local/x-ui/update-geodata.sh >/dev/null 2>&1') | crontab -
+    remove_lucx_cron_jobs || return 1
+    # Xray owns scheduled geodata downloads and reloads through cfg.geodata.
+    # Retire the old RUNET-only updater when upgrading an existing installation.
+    rm -f /usr/local/x-ui/update-geodata.sh
     (crontab -l 2>/dev/null; echo '0 1 * * * certbot renew --non-interactive --pre-hook "systemctl stop nginx" --deploy-hook "x-ui restart" --post-hook "systemctl start nginx" >/dev/null 2>&1') | crontab -
 }
 
