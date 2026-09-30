@@ -485,6 +485,48 @@ if text != original:
 PY_CLASH_RESTORE
 }
 
+repair_panel_clash_route() {
+    [[ -f /var/www/subpage/clash.yaml.tpl && -f /usr/local/lib/lucx-ui-pro/clash-sub-server.py ]] || return 0
+    python3 <<'PY_PANEL_CLASH_ROUTE'
+from pathlib import Path
+from contextlib import closing
+from urllib.parse import urlsplit
+import re
+import sqlite3
+
+with closing(sqlite3.connect('file:/etc/x-ui/x-ui.db?mode=ro', uri=True)) as db:
+    settings = dict(db.execute('SELECT key, value FROM settings ORDER BY id'))
+if settings.get('subClashEnable', 'false') != 'true':
+    raise SystemExit(0)
+uri = settings.get('subClashURI', '')
+prefix = urlsplit(uri).path if uri else settings.get('subClashPath', '/clash/')
+prefix = '/' + prefix.strip('/') + '/'
+if not re.fullmatch(r'/[A-Za-z0-9_/-]+/', prefix) or '//' in prefix:
+    raise SystemExit('Unsupported panel Clash path; route was not changed.')
+if prefix == settings.get('subPath') or prefix == settings.get('subJsonPath'):
+    raise SystemExit('Panel Clash path conflicts with another subscription path.')
+path = Path('/etc/nginx/snippets/includes.conf')
+text = path.read_text(encoding='utf-8')
+if '/__lucx_clash' not in text:
+    raise SystemExit('Clash renderer route is missing; no changes made.')
+route = f'''    # Dedicated Clash link displayed by the panel uses the same YAML renderer.
+    location ~ ^{prefix}(?<panel_clash_sub_id>[^/]+)/?$ {{
+        if ($hack = 1) {{ return 404; }}
+        rewrite ^ /__lucx_clash?sub_id=$panel_clash_sub_id last;
+    }}
+'''
+if route not in text:
+    # Remove a previously generated alias if the saved panel path has changed.
+    text = re.sub(r'    # Dedicated Clash link displayed by the panel uses the same YAML renderer\.\n'
+                  r'    location ~ [^\n]+\n'
+                  r'        if \(\$hack = 1\) \{ return 404; \}\n'
+                  r'        rewrite \^ /__lucx_clash\?sub_id=\$panel_clash_sub_id last;\n'
+                  r'    \}\n', '', text)
+    path.write_text(route + text, encoding='utf-8')
+    print('Restored panel Clash link routed to the shared YAML renderer.')
+PY_PANEL_CLASH_ROUTE
+}
+
 cmd_restore() {
     require_root
 
@@ -630,6 +672,7 @@ PY_META_AWG
     patch_panel_awg_command
     sanitize_awg_sysctl_file
     repair_clash_template
+    repair_panel_clash_route
 
     # ── panel cert symlinks (/root/cert/<domain> → letsencrypt) ──────────
     # Backups made before /root/cert was in BACKUP_PATHS lack the symlinks
