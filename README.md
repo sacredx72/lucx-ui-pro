@@ -1,9 +1,9 @@
 # lucx-ui-pro
 
-Автоматическая установка панели [lucx-ui](https://github.com/AlexeyLCP/lucx-ui) с nginx, SSL, автосозданием инбаундов, self-hosted DoH, защитой от сканеров и настройкой DNS в xray.
+Автоматическая установка панели [lucx-ui](https://github.com/AlexeyLCP/lucx-ui) с nginx, SSL, автосозданием инбаундов, self-hosted DoH, fail2ban, защитой от сканеров и настройкой DNS в xray.
 
 - Debian 12,13 / Ubuntu 24,26
-- Два домена или поддомена (для панели/DNS и для REALITY)
+- Два домена или поддомена (для панели/DNS и для REALITY), третий для Telegram WEB-proxy (опционально)
 - Автоматическое обновление SSL-сертификатов
 - Поддержка VLESS TCP REALITY, VLESS XHTTP TLS, Telegram WEB-proxy — через порт 443, а так же Hysteria 2, qWDTT и CSQTT
 
@@ -19,6 +19,8 @@
 | Фейковый сайт | Случайный HTML-сайт-прикрытие |
 | Бэкап | Скрипт резервного копирования |
 | AdGuard Home | Опционально: self-hosted DNS с блокировкой рекламы (DoH) |
+| rkn-guard | Опционально: защита от сканеров РКН |
+| fail2ban | защита от сканеров |
 
 ---
 
@@ -104,7 +106,12 @@ bash lucx-ui-latest.sh -tg-web-proxy-uninstall y
 |----------|----------|
 | `-install y` | Полная установка |
 | `-version <версия>` | Установить конкретную версию lucx-ui (например `v3.8.5-lucx.245`), по умолчанию — последняя |
-| `-uninstall y` | Полное удаление |
+| `-adguard y` | Установка AdGuard Home |
+| `-adguard-uninstall y` | Удаление AdGuard Home |
+| `-rkn-guard y` | Устанока rkn-guard |
+| `-rkn-guard-uninstall y` | Удаление rkn-guard |
+| `-tg-web-proxy y` | Устанока tg-web-proxy |
+| `-tg-web-proxy-uninstall y` | Удаление tg-web-proxy |
 
 ---
 
