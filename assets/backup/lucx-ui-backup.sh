@@ -36,7 +36,7 @@ BACKUP_PATHS=(
     /var/www/subpage
     /var/www/tproxy
     /root/.lucx-tg-web-proxy-info
-    /var/lib/lucx-ui-preinstall
+    /var/lib/lucx-ui-preinstall # Includes panel auto-domain mode; TG asks separately on every install.
     /etc/sysctl.d/99-lucx-ui-forwarding.conf
     /etc/sysctl.d/99-bbr-x-ui.conf
     /etc/sysctl.d/99-awg-performance.conf
@@ -66,6 +66,7 @@ SYSTEMD_UNITS=(
     lucx-apply-qdisc.service
     lucx-qdisc-sync.service lucx-qdisc-sync.path
     lucx-awg-sysctl-guard.service lucx-awg-sysctl-guard.path
+    lucx-awg-readiness.service
     antiscan-ipset-restore.service antiscan-move-rules.service
     antiscan-aggregate.service antiscan-aggregate.timer
     rkn-guard-list-update.service rkn-guard-list-update.timer
@@ -222,6 +223,368 @@ JSON
 }
 
 # Keep the official AWG installer BBR-neutral, matching lucx-ui-pro latest.
+install_awg_compat_support() {
+    install -d -m 0755 /usr/local/lib/lucx-ui-pro
+    cat > /usr/local/lib/lucx-ui-pro/awg-compat.py <<'PY_LUCX_AWG_COMPAT'
+#!/usr/bin/env python3
+"""Patch the bundled LucX installer; retain upstream repositories, pins and DKMS."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+
+REV = 'udp-api-2'
+MARKER = Path('/etc/x-ui/.lucx-awg-compat-version')
+REPORT = Path('/var/lib/lucx-ui-pro/awg-readiness.json')
+SELF = '/usr/local/lib/lucx-ui-pro/awg-compat.py'
+
+PROBE = r'''/* Compile against the target kernel, without compat.h. */
+#ifndef KBUILD_MODNAME
+#define KBUILD_MODNAME "lucx_udp_probe"
+#endif
+#ifndef KBUILD_BASENAME
+#define KBUILD_BASENAME "lucx_udp_probe"
+#endif
+#ifndef MODULE
+#define MODULE 1
+#endif
+#include <linux/kconfig.h>
+#include <net/udp_tunnel.h>
+#ifdef LUCX_PROBE_SOCK
+#define LUCX_ARG struct sock *
+#else
+#define LUCX_ARG struct socket *
+#endif
+#ifdef LUCX_PROBE_SETUP
+_Static_assert(__builtin_types_compatible_p(typeof(&setup_udp_tunnel_sock),
+    void (*)(struct net *, LUCX_ARG, struct udp_tunnel_sock_cfg *)),
+    "setup_udp_tunnel_sock: incompatible signature");
+#else
+_Static_assert(__builtin_types_compatible_p(typeof(&udp_tunnel_sock_release),
+    void (*)(LUCX_ARG)), "udp_tunnel_sock_release: incompatible signature");
+#endif
+'''
+
+KBUILD = r'''
+# LUCX UDP API: feature probes run again for each DKMS target kernel.
+# modpost also reads Kbuild, but has no compiler/include context. Probe only
+# while Makefile.build is compiling objects; modpost needs no ccflags.
+ifneq ($(filter %/Makefile.build,$(MAKEFILE_LIST)),)
+lucx-udp-probe = $(call try-run,$(CC) $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(LINUXINCLUDE) -DLUCX_PROBE_$(1) -DLUCX_PROBE_$(2) -x c -c $(kbuild-dir)/compat/lucx_udp_probe.c -o "$$TMP",y,n)
+ifeq ($(call lucx-udp-probe,SETUP,SOCK),y)
+ccflags-y += -DLUCX_UDP_SETUP_SOCK
+else ifeq ($(call lucx-udp-probe,SETUP,SOCKET),y)
+ccflags-y += -DLUCX_UDP_SETUP_SOCKET
+else
+$(error LucX AWG: cannot detect setup_udp_tunnel_sock ABI; check target headers/compiler)
+endif
+ifeq ($(call lucx-udp-probe,RELEASE,SOCK),y)
+ccflags-y += -DLUCX_UDP_RELEASE_SOCK
+else ifeq ($(call lucx-udp-probe,RELEASE,SOCKET),y)
+ccflags-y += -DLUCX_UDP_RELEASE_SOCKET
+else
+$(error LucX AWG: cannot detect udp_tunnel_sock_release ABI; check target headers/compiler)
+endif
+endif
+'''
+
+COMPAT = r'''/* LUCX UDP API: use the signatures detected against target headers. */
+#include <net/udp_tunnel.h>
+#if defined(LUCX_UDP_SETUP_SOCKET)
+#define setup_udp_tunnel_sock(net, sk, sock_cfg) setup_udp_tunnel_sock(net, (sk)->sk_socket, sock_cfg)
+#elif !defined(LUCX_UDP_SETUP_SOCK)
+#error "LucX AWG: setup UDP ABI not detected"
+#endif
+#if defined(LUCX_UDP_RELEASE_SOCKET)
+#define udp_tunnel_sock_release(sk) udp_tunnel_sock_release((sk)->sk_socket)
+#elif !defined(LUCX_UDP_RELEASE_SOCK)
+#error "LucX AWG: release UDP ABI not detected"
+#endif
+'''
+
+def patch_source(directory):
+    src = Path(directory)
+    header = src / 'compat/compat.h'
+    build = src / 'Kbuild'
+    text, kb = header.read_text(), build.read_text()
+    dkms = src / 'dkms.conf'
+    data = dkms.read_text()
+    make_line = 'MAKE[0]="make KERNELRELEASE=${kernelver} WIREGUARD_VERSION=${PACKAGE_VERSION}"\n'
+    if '/* LUCX UDP API:' in text:
+        if COMPAT not in text or KBUILD not in kb or (src / 'compat/lucx_udp_probe.c').read_text() != PROBE or make_line not in data:
+            raise RuntimeError('Unknown/incomplete LucX UDP patch; refusing to guess')
+        return
+    old = '''#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 5)
+#include <net/udp_tunnel.h>
+#define setup_udp_tunnel_sock(net, sk, sock_cfg) setup_udp_tunnel_sock(net, sk->sk_socket, sock_cfg)
+#define udp_tunnel_sock_release(sk) udp_tunnel_sock_release(sk->sk_socket)
+#endif
+'''
+    if text.count(old) != 1 or 'include $(src)/compat/Kbuild.include' not in kb:
+        raise RuntimeError('Unsupported upstream UDP compat layout; sources not changed')
+    sock = (src / 'socket.c').read_text()
+    if 'setup_udp_tunnel_sock(net, new4->sk, &cfg)' not in sock:
+        raise RuntimeError('Unsupported upstream socket calls; sources not changed')
+    if re.search(r'(?m)^MAKE\[', data):
+        raise RuntimeError('Unexpected upstream DKMS MAKE override; sources not changed')
+    header.write_text(text.replace(old, COMPAT))
+    build.write_text(kb + KBUILD)
+    (src / 'compat/lucx_udp_probe.c').write_text(PROBE)
+    dkms.write_text(data + '\n' + make_line)
+
+def run(*args, timeout=30):
+    try:
+        return subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(args, 127, '', str(exc))
+
+def kernels():
+    # Check all installed kernel images, including kernels lacking headers.
+    targets = {p.name[8:] for p in Path('/boot').glob('vmlinuz-*') if p.is_file()}
+    targets.add(os.uname().release)
+    for p in Path('/lib/modules').glob('*'):
+        if (p / 'build').exists():
+            targets.add(p.name)
+    return sorted(targets)
+
+def archived_without_headers(kernel, current, next_kernel=None):
+    # Retained old boot images may have no installable headers. They must not
+    # invalidate the current module or force endless rebuilds. Explicit boot
+    # targets, current kernels and kernels with headers remain mandatory.
+    if kernel in (current, next_kernel) or (Path('/lib/modules') / kernel / 'build').exists():
+        return False
+    if not re.match(r'^\d', kernel) or not re.match(r'^\d', current):
+        return False
+    return run('dpkg', '--compare-versions', kernel, 'lt', current).returncode == 0
+
+
+def needs_rebuild():
+    if not MARKER.is_file() or MARKER.read_text().strip() != REV:
+        return True
+    current = os.uname().release
+    return any('-lucxudp2' not in run('modinfo', '-k', k, '-F', 'version', 'amneziawg').stdout
+               for k in kernels() if not archived_without_headers(k, current))
+
+def patch_installer(file):
+    path = Path(file)
+    text = path.read_text(encoding='utf-8')
+    if '# LUCX UDP installer udp-api-1' in text:
+        text = text.replace('# LUCX UDP installer udp-api-1', '# LUCX UDP installer udp-api-2')
+        text = text.replace('MOD_VER="${MOD_VER}-lucxudp1"', 'MOD_VER="${MOD_VER}-lucxudp2"')
+        path.write_text(text, encoding='utf-8')
+        return
+    if '# LUCX UDP installer udp-api-2' in text:
+        return
+    start = text.find('apply_udp_tunnel_abi_compat() {')
+    end = text.find('\nPY\n}\n', start)
+    if end >= 0:
+        end += len('\nPY')
+    gate = '# Skip DKMS/kernel when the installed module SHA'
+    call = '    apply_udp_tunnel_abi_compat socket.c || \\\n'
+    if start < 0 or end < 0 or text.count(gate) != 1 or text.count(call) != 1:
+        raise RuntimeError('Unsupported LucX installer layout; no changes made')
+    # An unknown source patch must fail, rather than continuing without compat.
+    tail = text[end + 3:]
+    replacement = f'''apply_udp_tunnel_abi_compat() {{
+    python3 {SELF} patch-source "$PWD"
+}}
+'''
+    text = text[:start] + replacement + tail
+    text = text.replace(gate, f'''# LUCX UDP installer udp-api-2
+if [[ "$DO_UNINSTALL" -ne 1 ]]; then
+    if python3 {SELF} needs-rebuild; then FORCE_REBUILD=1; fi
+    trap 'lucx_rc=$?; lucx_ready_rc=0; python3 {SELF} ready --installed --installer-exit "$lucx_rc" || lucx_ready_rc=$?; if [[ "$lucx_rc" -eq 0 ]]; then lucx_rc=$lucx_ready_rc; fi; exit "$lucx_rc"' EXIT
+fi
+{gate}''', 1)
+    uninstall = 'if [[ $DO_UNINSTALL -eq 1 ]]; then\n'
+    if text.count(uninstall) != 1:
+        raise RuntimeError('Unsupported LucX uninstall branch; no changes made')
+    text = text.replace(uninstall, uninstall +
+                        f"    trap 'lucx_rc=$?; if [[ \"$lucx_rc\" -eq 0 ]]; then python3 {SELF} cleanup; fi; exit \"$lucx_rc\"' EXIT\n", 1)
+    # Locate the call and its warning continuation, preserving following code.
+    text = re.sub(r'    apply_udp_tunnel_abi_compat socket\.c \|\| \\\n[^\n]*\n',
+                  '    MOD_VER="${MOD_VER}-lucxudp2"\n'
+                  '    apply_udp_tunnel_abi_compat socket.c || exit 1\n', text, count=1)
+    text = text.replace('=== Установка AWG завершена ===', '=== Штатная установка AWG завершена; проверяем готовность ===')
+    # Keep the marker tied to successful patched sources, not just a loaded old module.
+    path.write_text(text, encoding='utf-8')
+
+def ready(installed=False, next_kernel=None, installer_exit=None):
+    current = os.uname().release
+    targets = set(kernels())
+    if next_kernel:
+        if not re.fullmatch(r'[0-9][A-Za-z0-9._+-]{0,127}', next_kernel):
+            raise ValueError('Invalid next kernel release')
+        targets.add(next_kernel)
+    results = {k: '-lucxudp2' in run('modinfo', '-k', k, '-F', 'version', 'amneziawg').stdout for k in sorted(targets)}
+    archived = [k for k, ok in results.items() if not ok and archived_without_headers(k, current, next_kernel)]
+    required = {k: ok for k, ok in results.items() if k not in archived}
+    tools = all(shutil.which(t) for t in ('awg', 'awg-quick', 'ip'))
+    loaded = False
+    interface = False
+    failures = []
+    present = any(results.values()) or Path('/etc/x-ui/.awg-module-version').exists() or REPORT.is_file()
+    if not present and not installed:
+        print('AWG: not installed; readiness check skipped.')
+        return 0
+    for k, ok in results.items():
+        print(f'AWG patched module [{k}]: {"INSTALLED" if ok else "MISSING"}')
+    for k in archived:
+        print(f'AWG older kernel [{k}]: no headers/module; excluded from current readiness. Use --next-kernel if selected for boot.')
+    if run('modinfo', '-k', current, 'amneziawg').returncode == 0:
+        load = run('modprobe', 'amneziawg')
+        loaded = load.returncode == 0
+        if not loaded:
+            failures.append('modprobe: ' + load.stderr.strip())
+    if loaded and tools:
+        ns = f'lucx-awg-check-{os.getpid()}'
+        created = False
+        try:
+            create = run('ip', 'netns', 'add', ns)
+            created = create.returncode == 0
+            if not created:
+                failures.append('network namespace: ' + create.stderr.strip())
+            else:
+                with tempfile.TemporaryDirectory(prefix='lucx-awg-check-', dir='/run') as tmp:
+                    conf = Path(tmp) / 'lucxawgtest.conf'
+                    key = run('awg', 'genkey')
+                    if key.returncode:
+                        failures.append('awg genkey failed')
+                    else:
+                        conf.write_text('[Interface]\nPrivateKey = ' + key.stdout.strip() + '\n')
+                        conf.chmod(0o600)
+                        up = run('ip', 'netns', 'exec', ns, 'awg-quick', 'up', str(conf))
+                        if up.returncode == 0:
+                            interface = run('ip', 'netns', 'exec', ns, 'awg', 'show', 'lucxawgtest').returncode == 0
+                        if not interface:
+                            failures.append('awg-quick temporary interface failed: ' + up.stderr.strip())
+                        run('ip', 'netns', 'exec', ns, 'awg-quick', 'down', str(conf))
+        finally:
+            if created:
+                run('ip', 'netns', 'delete', ns)
+    local_ready = tools and loaded and interface and all(required.values())
+    # A loaded old module is not proof that the replacement is active.
+    reboot_flag = Path('/etc/x-ui/.awg-reboot-needed')
+    reboot_pending = reboot_flag.is_file()
+    disk_version = run('modinfo', '-F', 'version', 'amneziawg').stdout.strip()
+    active_file = Path('/sys/module/amneziawg/version')
+    active_version = active_file.read_text().strip() if active_file.is_file() else ''
+    replacement_active = bool(active_version and active_version == disk_version)
+    if reboot_pending and replacement_active and '-lucxudp2' in disk_version and all(required.values()):
+        reboot_flag.unlink()
+        reboot_pending = False
+    local_ready = local_ready and replacement_active and not reboot_pending and installer_exit in (None, 0)
+    if installed and installer_exit in (None, 0) and all(required.values()) and '-lucxudp2' in disk_version:
+        MARKER.parent.mkdir(parents=True, exist_ok=True)
+        MARKER.write_text(REV + '\n')
+    dns = run('getent', 'ahostsv4', 'example.org', timeout=8).returncode == 0
+    interfaces = run('awg', 'show', 'interfaces').stdout.split() if tools else []
+    now = int(time.time())
+    handshakes = []
+    rx = tx = 0
+    if tools:
+        for line in run('awg', 'show', 'all', 'latest-handshakes').stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 3 and parts[2].isdigit() and int(parts[2]) > 0:
+                handshakes.append(int(parts[2]))
+        for line in run('awg', 'show', 'all', 'transfer').stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 4 and parts[2].isdigit() and parts[3].isdigit():
+                rx += int(parts[2])
+                tx += int(parts[3])
+    report = dict(revision=REV, checked_at=int(time.time()), boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                  current_kernel=current, modules=results, required_modules=required, archived_kernels_without_modules=archived, tools_available=bool(tools),
+                  module_loaded=loaded, temporary_interface=interface,
+                  installed_module_version=disk_version, loaded_module_version=active_version,
+                  installer_exit=installer_exit,
+                  reboot_pending=reboot_pending, local_ready=bool(local_ready),
+                  next_boot_kernel=next_kernel or 'not_verified; all installed kernel images checked',
+                  host_dns=dns, interfaces=interfaces, client_dns='NOT_TESTED',
+                  observed_recent_handshake=any(0 <= now - h <= 180 for h in handshakes),
+                  observed_received_bytes=rx, observed_sent_bytes=tx,
+                  client_handshake_and_traffic='NOT_TESTED; server counters recorded separately', errors=failures)
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=REPORT.parent, prefix='.awg-readiness-')
+    with os.fdopen(fd, 'w') as out:
+        json.dump(report, out, indent=2)
+        out.write('\n')
+    os.replace(tmp, REPORT)
+    print(f'AWG current module: {"LOADED" if loaded else "NOT LOADED"}; tools: {"OK" if tools else "MISSING"}')
+    if installer_exit is not None:
+        print(f'AWG original installer exit code: {installer_exit}')
+    print(f'AWG isolated awg-quick interface: {"OK" if interface else "FAILED/NOT TESTED"}')
+    print(f'AWG loaded replacement: {"YES" if replacement_active else "NO"}; reboot flag: {reboot_pending}')
+    print(f'AWG host DNS: {"OK" if dns else "FAILED"}; client DNS and traffic: NOT TESTED')
+    print(f'AWG server observations: recent peer handshake={report["observed_recent_handshake"]}; received={rx} bytes; sent={tx} bytes')
+    print('AWG next boot kernel: ' + (next_kernel + ' (specified by operator)' if next_kernel else
+          'NOT VERIFIED; module availability checked for all installed images.'))
+    for failure in failures:
+        print(failure)
+    print('AWG local readiness: ' + ('READY (client traffic still requires testing)' if local_ready else 'INCOMPLETE'))
+    print('AWG report:', REPORT)
+    return 0 if local_ready else 1
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['patch-source', 'patch-installer', 'needs-rebuild', 'ready', 'cleanup'])
+    parser.add_argument('path', nargs='?')
+    parser.add_argument('--installed', action='store_true')
+    parser.add_argument('--next-kernel')
+    parser.add_argument('--installer-exit', type=int)
+    args = parser.parse_args()
+    if args.action == 'patch-source':
+        patch_source(args.path)
+    elif args.action == 'patch-installer':
+        patch_installer(args.path)
+    elif args.action == 'needs-rebuild':
+        return 0 if needs_rebuild() else 1
+    elif args.action == 'cleanup':
+        MARKER.unlink(missing_ok=True)
+        REPORT.unlink(missing_ok=True)
+    else:
+        return ready(args.installed, args.next_kernel, args.installer_exit)
+    return 0
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise SystemExit(f'LucX AWG compat: {exc}')
+PY_LUCX_AWG_COMPAT
+    chmod 0755 /usr/local/lib/lucx-ui-pro/awg-compat.py
+    cat > /etc/systemd/system/lucx-awg-readiness.service <<'AWG_READINESS_UNIT'
+[Unit]
+Description=Check LucX AmneziaWG readiness after boot
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/lucx-ui-pro/awg-compat.py ready
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
+AWG_READINESS_UNIT
+    systemctl daemon-reload
+    systemctl enable lucx-awg-readiness.service >/dev/null
+    # Older backup archives contain the previous BBR-only guard.
+    if [[ -f /usr/local/sbin/lucx-awg-sysctl-guard ]] &&
+       ! grep -q 'awg-compat.py patch-installer' /usr/local/sbin/lucx-awg-sysctl-guard; then
+        cat >> /usr/local/sbin/lucx-awg-sysctl-guard <<'AWG_COMPAT_GUARD'
+if [[ -f /usr/local/x-ui/bin/install-awg-module.sh ]]; then
+    python3 /usr/local/lib/lucx-ui-pro/awg-compat.py patch-installer /usr/local/x-ui/bin/install-awg-module.sh || exit 1
+fi
+AWG_COMPAT_GUARD
+    fi
+}
+
 patch_awg_installer() {
     local script=/usr/local/x-ui/bin/install-awg-module.sh
     [[ -f "$script" ]] || return 0
@@ -233,6 +596,7 @@ text=re.sub(r'(?m)^\s*net\.core\.default_qdisc\s*=\s*fq\s*$\n?', '', text)
 text=re.sub(r'(?m)^\s*net\.ipv4\.tcp_congestion_control\s*=\s*bbr\s*$\n?', '', text)
 open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
 PY_AWG_RESTORE
+    python3 /usr/local/lib/lucx-ui-pro/awg-compat.py patch-installer "$script" || return 1
     chmod +x "$script" 2>/dev/null || true
 }
 
@@ -288,16 +652,17 @@ end=text.find("\nuninstall_awg_module()", start)
 if end < 0:
     raise SystemExit(0)
 block=text[start:end]
+block=block.replace("    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n", "    /usr/local/sbin/lucx-awg-sysctl-guard || return 1\n", 1)
 if 'lucx-awg-sysctl-guard' not in block and 'bash "$script" "$@"' in block:
     block=block.replace(
         '    bash "$script" "$@"\n',
-        '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
+        '    /usr/local/sbin/lucx-awg-sysctl-guard || return 1\n'
         '    bash "$script" "$@"\n'
         '    local rc=$?\n'
         '    /usr/local/sbin/lucx-awg-sysctl-guard >/dev/null 2>&1 || true\n'
         '    return $rc\n',1)
-    text=text[:start]+block+text[end:]
-    open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
+text=text[:start]+block+text[end:]
+open(path,'w',encoding='utf-8',errors='surrogateescape').write(text)
 PY_AWG_CMD_RESTORE
         chmod +x "$script" 2>/dev/null || true
     done
@@ -327,6 +692,7 @@ restore_awg_module() {
                   /etc/x-ui/.awg-module-version /etc/x-ui/.awg-reboot-needed
             update-initramfs -u -k all >/dev/null 2>&1 || update-initramfs -u >/dev/null 2>&1 || true
         fi
+        rm -f /etc/x-ui/.lucx-awg-compat-version /var/lib/lucx-ui-pro/awg-readiness.json
         return 0
     fi
     if [[ ! -x "$script" ]]; then
@@ -581,7 +947,7 @@ PY_META_AWG
 
     # ── stop running services ─────────────────────────────────────────────
     blue "==> Stopping services..."
-    for svc in nginx x-ui lucx-clash-sub mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync lucx-qdisc-sync.path lucx-awg-sysctl-guard lucx-awg-sysctl-guard.path; do
+    for svc in lucx-awg-readiness nginx x-ui lucx-clash-sub mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync lucx-qdisc-sync.path lucx-awg-sysctl-guard lucx-awg-sysctl-guard.path; do
         systemctl stop "${svc}" 2>/dev/null || true
     done
 
@@ -669,6 +1035,7 @@ PY_META_AWG
     # Reconcile Fail2ban through the panel CLI. This keeps the restored jail/filter/action
     # format aligned with the x-ui version instead of treating copied files as authoritative.
     setup_fail2ban || true
+    install_awg_compat_support
     patch_panel_awg_command
     sanitize_awg_sysctl_file
     repair_clash_template
@@ -891,11 +1258,14 @@ PY_TG_RESTORE
     fi
     # Restore saved UFW policy without changing its routed-traffic default.
     if [[ -f "${staging}/ufw-state" ]] && grep -qx inactive "${staging}/ufw-state"; then
-        ufw --force disable 2>/dev/null || true
+        ufw --force disable || die "Failed to restore inactive UFW state"
     else
-        ufw --force enable 2>/dev/null || true
+        ufw --force enable || die "Failed to enable restored UFW policy"
+        # enable is a no-op when UFW is already active. Load the restored files
+        # now, so runtime ports/routed policy match the backup before reporting success.
+        ufw reload || die "Failed to apply restored UFW rules"
     fi
-    green "    UFW state restored"
+    green "    UFW state and runtime rules restored"
 
     local required_service saved_active
     for required_service in x-ui nginx lucx-clash-sub AdGuardHome; do
@@ -916,6 +1286,9 @@ PY_TG_RESTORE
     fi
 
     echo
+    if [[ "$awg_installed_from_backup" == "1" ]]; then
+        python3 /usr/local/lib/lucx-ui-pro/awg-compat.py ready || awg_restore_failed=1
+    fi
     if (( awg_restore_failed )); then
         die "Restore incomplete: AmneziaWG could not be restored. Other components were restored; see the errors above."
     fi
@@ -972,7 +1345,7 @@ What is backed up:
   Telegram WEB-proxy domain, certificate and inbound (inside x-ui DB)
   /opt/AdGuardHome                self-hosted DoH (if installed)
   rkn-guard binary, manager, ipset/UFW state and update timers
-  /var/lib/lucx-ui-preinstall     pre-install firewall snapshot
+  /var/lib/lucx-ui-preinstall     pre-install firewall snapshot and auto-domain selection
   /etc/sysctl.d/99-lucx-ui-forwarding.conf  persistent IPv4 forwarding
   relevant services and timers from /etc/systemd/system
   /etc/default/ufw + /etc/ufw/{user,before}*.rules  firewall policy/rules
