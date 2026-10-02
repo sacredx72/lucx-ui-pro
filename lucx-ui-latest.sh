@@ -4629,7 +4629,9 @@ main() {
     # the optional AWG reboot prompt so a manual rerun never repeats cleanup.
     clear_install_in_progress
     if [[ "${DEPLOY_AWG}" == "y" ]]; then
-        python3 /usr/local/lib/lucx-ui-pro/awg-compat.py ready || AWG_INSTALL_FAILED=1
+        # The installer already printed the AWG report. Keep this final check
+        # silent so panel/Telegram credentials remain the final results screen.
+        python3 /usr/local/lib/lucx-ui-pro/awg-compat.py ready >/dev/null || AWG_INSTALL_FAILED=1
         if [[ "$AWG_INSTALL_FAILED" -eq 1 ]]; then
             msg_err "Panel installed; AWG readiness is incomplete. See /var/lib/lucx-ui-pro/awg-readiness.json."
             msg_inf "A reboot alone does not repair a missing module build. Review the reported status first."
