@@ -1,9 +1,9 @@
 # lucx-ui-pro
 
-Автоматическая установка панели [lucx-ui](https://github.com/AlexeyLCP/lucx-ui) с nginx, SSL, автосозданием инбаундов, self-hosted DoH, fail2ban, защитой от сканеров, настройкой DNS в xray, а также поддержкой Clash/Mihomo подписки.
+Автоматическая установка панели [lucx-ui](https://github.com/AlexeyLCP/lucx-ui) с nginx, SSL, автосозданием инбаундов, автогенерацией доменов (только для теста), self-hosted DoH, fail2ban, защитой от сканеров, настройкой DNS в xray, а также поддержкой Clash/Mihomo подписки.
 
 - Debian 12,13 / Ubuntu 24,26
-- Два домена или поддомена (для панели/DNS и для REALITY), третий для Telegram WEB-proxy (опционально)
+- Два домена или поддомена (для панели/DNS и для REALITY), третий для Telegram WEB-proxy (опционально) либо Автогенерация доменов (только для тестов, повышенный риск бана ТСПУ)
 - Автоматическое обновление SSL-сертификатов
 - Поддержка VLESS TCP REALITY, VLESS XHTTP TLS, Telegram WEB-proxy — через порт 443, а так же Hysteria 2, qWDTT и CSQTT
 
