@@ -1,0 +1,2 @@
+body{background:#eae5db;color:#3e342c;font-family:Arial,sans-serif;}
+.board-head{display:flex;justify-content:space-between;padding:25px 5vw;border-bottom:1px solid #baac9b}.board{padding:35px 5vw}h1{font-size:45px}.kanban{display:grid;grid-template-columns:repeat(3,1fr);gap:25px}.kanban-column{background:#d7cebe;padding:20px;border-radius:4px}.task{background:#faf7ee;padding:20px;margin:14px 0;box-shadow:0 3px 0 #b9ae9d}.task label{display:flex;gap:12px}.board-footer{margin:35px 0;padding:25px;border-block:1px solid #baac9b}

@@ -1,0 +1,2 @@
+body{background:#efeee7;color:#3b4235;font-family:Arial,sans-serif;}
+.schedule{max-width:1150px;margin:auto;padding:35px}.schedule header{display:flex;justify-content:space-between;border-bottom:3px solid #566446;padding-bottom:20px}h1{font-size:45px}.schedule-body{display:grid;grid-template-columns:2fr 1fr;gap:40px;margin:35px 0}.session{display:grid;grid-template-columns:90px 1fr;padding:22px 0;border-top:1px solid #b5bcaa}.session time{font:26px Georgia}.schedule aside{background:#e0e5d6;padding:25px}

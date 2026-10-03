@@ -1,0 +1,2 @@
+body{background:white;color:#1f2930;font-family:Arial,sans-serif;}
+.datasheet{max-width:1120px;margin:auto;padding:35px}.datasheet header{display:flex;justify-content:space-between;border-bottom:4px solid #222;padding-bottom:20px}.data-title{padding:25px 0;border-bottom:1px solid}h1{font-size:42px;margin:15px 0}.data-two{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:25px}.data-band{border-block:1px solid;margin:30px 0;padding:15px 0}footer{font-size:12px}

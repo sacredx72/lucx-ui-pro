@@ -1,0 +1,2 @@
+body{background:#111827;color:#e1e8f0;font-family:Arial,sans-serif;}
+.compare-head{display:flex;justify-content:space-between;padding:25px 5vw;border-bottom:1px solid #384154}.compare{max-width:1200px;margin:auto;padding:45px 30px}h1{font-size:52px}.compare-detail{display:grid;grid-template-columns:1fr 1.4fr;gap:40px;margin-top:40px}.compare table{background:#1e293b}.compare button{margin:10px 5px 25px 0}footer{padding:25px 5vw}

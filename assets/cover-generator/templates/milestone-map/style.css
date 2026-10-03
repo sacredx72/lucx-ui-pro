@@ -1,0 +1,2 @@
+body{background:#eceaf0;color:#3e3548;font-family:Arial,sans-serif;}
+.road-head{padding:25px 6vw;background:#fff;display:flex;justify-content:space-between}.road{padding:45px 6vw}h1{font-size:55px}.milestones{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin:45px 0}.milestone{padding:25px;background:#fff;border-top:7px solid var(--accent)}.milestone b{font-size:40px;font-weight:normal}.road-bottom{display:grid;grid-template-columns:1.6fr 1fr;gap:35px}

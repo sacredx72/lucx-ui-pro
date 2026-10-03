@@ -1,0 +1,2 @@
+body{background:#f4f0e9;color:#4a3b32;font-family:Arial,sans-serif;}
+.history-header{display:flex;justify-content:space-between;padding:30px 7vw;border-bottom:1px solid #b9aea0}.history-intro{max-width:800px;margin:70px auto;text-align:center}h1{font-size:65px;letter-spacing:-3px}.history{max-width:900px;margin:auto;border-left:2px solid #b9aea0}.time-entry{padding:25px 40px;position:relative}.time-entry:before{content:"";width:14px;height:14px;border-radius:50%;background:var(--accent);position:absolute;left:-8px;top:40px}.closing{padding:50px 7vw}footer{padding:25px 7vw}

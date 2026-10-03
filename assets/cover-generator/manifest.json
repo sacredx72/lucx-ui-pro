@@ -1,0 +1,326 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "families": [
+    {
+      "id": "field-journal",
+      "name": "Field journal",
+      "topic_group": "creative",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 9,
+      "template": "field-journal/page.html",
+      "style": "field-journal/style.css"
+    },
+    {
+      "id": "instrument-console",
+      "name": "Instrument console",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 2,
+      "template": "instrument-console/page.html",
+      "style": "instrument-console/style.css"
+    },
+    {
+      "id": "reference-wiki",
+      "name": "Reference wiki",
+      "topic_group": "mixed",
+      "min_pages": 6,
+      "max_pages": 12,
+      "sections": 3,
+      "template": "reference-wiki/page.html",
+      "style": "reference-wiki/style.css"
+    },
+    {
+      "id": "terminal-notes",
+      "name": "Terminal notebook",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 3,
+      "template": "terminal-notes/page.html",
+      "style": "terminal-notes/style.css"
+    },
+    {
+      "id": "project-history",
+      "name": "Project history",
+      "topic_group": "creative",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 10,
+      "template": "project-history/page.html",
+      "style": "project-history/style.css"
+    },
+    {
+      "id": "component-catalog",
+      "name": "Component catalogue",
+      "topic_group": "mixed",
+      "min_pages": 3,
+      "max_pages": 6,
+      "sections": 2,
+      "template": "component-catalog/page.html",
+      "style": "component-catalog/style.css"
+    },
+    {
+      "id": "research-poster",
+      "name": "Research poster",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 4,
+      "template": "research-poster/page.html",
+      "style": "research-poster/style.css"
+    },
+    {
+      "id": "pocket-calculator",
+      "name": "Pocket calculator",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 1,
+      "template": "pocket-calculator/page.html",
+      "style": "pocket-calculator/style.css"
+    },
+    {
+      "id": "lab-notebook",
+      "name": "Laboratory notebook",
+      "topic_group": "mixed",
+      "min_pages": 2,
+      "max_pages": 5,
+      "sections": 10,
+      "template": "lab-notebook/page.html",
+      "style": "lab-notebook/style.css"
+    },
+    {
+      "id": "comparison-desk",
+      "name": "Comparison desk",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 3,
+      "template": "comparison-desk/page.html",
+      "style": "comparison-desk/style.css"
+    },
+    {
+      "id": "exploded-diagram",
+      "name": "Exploded diagram",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 2,
+      "template": "exploded-diagram/page.html",
+      "style": "exploded-diagram/style.css"
+    },
+    {
+      "id": "question-book",
+      "name": "Question book",
+      "topic_group": "mixed",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 5,
+      "template": "question-book/page.html",
+      "style": "question-book/style.css"
+    },
+    {
+      "id": "developer-manual",
+      "name": "Developer manual",
+      "topic_group": "technical",
+      "min_pages": 5,
+      "max_pages": 10,
+      "sections": 4,
+      "template": "developer-manual/page.html",
+      "style": "developer-manual/style.css"
+    },
+    {
+      "id": "milestone-map",
+      "name": "Milestone map",
+      "topic_group": "mixed",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 3,
+      "template": "milestone-map/page.html",
+      "style": "milestone-map/style.css"
+    },
+    {
+      "id": "measurement-table",
+      "name": "Measurement table",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 2,
+      "template": "measurement-table/page.html",
+      "style": "measurement-table/style.css"
+    },
+    {
+      "id": "technical-portfolio",
+      "name": "Technical portfolio",
+      "topic_group": "creative",
+      "min_pages": 3,
+      "max_pages": 7,
+      "sections": 3,
+      "template": "technical-portfolio/page.html",
+      "style": "technical-portfolio/style.css"
+    },
+    {
+      "id": "engineering-datasheet",
+      "name": "Engineering datasheet",
+      "topic_group": "technical",
+      "min_pages": 2,
+      "max_pages": 3,
+      "sections": 2,
+      "template": "engineering-datasheet/page.html",
+      "style": "engineering-datasheet/style.css"
+    },
+    {
+      "id": "learning-course",
+      "name": "Learning course",
+      "topic_group": "mixed",
+      "min_pages": 6,
+      "max_pages": 10,
+      "sections": 4,
+      "template": "learning-course/page.html",
+      "style": "learning-course/style.css"
+    },
+    {
+      "id": "technical-directory",
+      "name": "Technical directory",
+      "topic_group": "mixed",
+      "min_pages": 4,
+      "max_pages": 8,
+      "sections": 3,
+      "template": "technical-directory/page.html",
+      "style": "technical-directory/style.css"
+    },
+    {
+      "id": "workshop-board",
+      "name": "Workshop board",
+      "topic_group": "mixed",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 2,
+      "template": "workshop-board/page.html",
+      "style": "workshop-board/style.css"
+    },
+    {
+      "id": "observatory-atlas",
+      "name": "Observatory atlas",
+      "topic_group": "mixed",
+      "min_pages": 4,
+      "max_pages": 9,
+      "sections": 3,
+      "template": "observatory-atlas/page.html",
+      "style": "observatory-atlas/style.css"
+    },
+    {
+      "id": "materials-library",
+      "name": "Materials library",
+      "topic_group": "mixed",
+      "min_pages": 3,
+      "max_pages": 6,
+      "sections": 3,
+      "template": "materials-library/page.html",
+      "style": "materials-library/style.css"
+    },
+    {
+      "id": "systems-blueprint",
+      "name": "Systems blueprint",
+      "topic_group": "technical",
+      "min_pages": 2,
+      "max_pages": 4,
+      "sections": 4,
+      "template": "systems-blueprint/page.html",
+      "style": "systems-blueprint/style.css"
+    },
+    {
+      "id": "release-bulletin",
+      "name": "Release bulletin",
+      "topic_group": "mixed",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 8,
+      "template": "release-bulletin/page.html",
+      "style": "release-bulletin/style.css"
+    },
+    {
+      "id": "design-studio",
+      "name": "Design studio",
+      "topic_group": "creative",
+      "min_pages": 2,
+      "max_pages": 5,
+      "sections": 3,
+      "template": "design-studio/page.html",
+      "style": "design-studio/style.css"
+    },
+    {
+      "id": "process-flow",
+      "name": "Process flow",
+      "topic_group": "mixed",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 3,
+      "template": "process-flow/page.html",
+      "style": "process-flow/style.css"
+    },
+    {
+      "id": "optics-gallery",
+      "name": "Optics gallery",
+      "topic_group": "creative",
+      "min_pages": 4,
+      "max_pages": 8,
+      "sections": 2,
+      "template": "optics-gallery/page.html",
+      "style": "optics-gallery/style.css"
+    },
+    {
+      "id": "workshop-schedule",
+      "name": "Workshop schedule",
+      "topic_group": "mixed",
+      "min_pages": 2,
+      "max_pages": 4,
+      "sections": 2,
+      "template": "workshop-schedule/page.html",
+      "style": "workshop-schedule/style.css"
+    },
+    {
+      "id": "signal-study",
+      "name": "Signal study",
+      "topic_group": "technical",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 2,
+      "template": "signal-study/page.html",
+      "style": "signal-study/style.css"
+    },
+    {
+      "id": "index-cards",
+      "name": "Index cards",
+      "topic_group": "creative",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 3,
+      "template": "index-cards/page.html",
+      "style": "index-cards/style.css"
+    },
+    {
+      "id": "inspection-log",
+      "name": "Inspection log",
+      "topic_group": "technical",
+      "min_pages": 3,
+      "max_pages": 6,
+      "sections": 4,
+      "template": "inspection-log/page.html",
+      "style": "inspection-log/style.css"
+    },
+    {
+      "id": "engineering-essay",
+      "name": "Engineering essay",
+      "topic_group": "creative",
+      "min_pages": 1,
+      "max_pages": 1,
+      "sections": 12,
+      "template": "engineering-essay/page.html",
+      "style": "engineering-essay/style.css"
+    }
+  ]
+}

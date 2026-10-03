@@ -1,0 +1,2 @@
+body{background:#edeff1;color:#273849;font-family:Arial,sans-serif;}
+.directory-head{display:flex;justify-content:space-between;padding:25px 4vw;background:#243f51;color:#fff}.directory{max-width:1200px;margin:auto;padding:40px;display:grid;grid-template-columns:1fr 2fr 1fr;gap:25px}.resource{padding:20px;border-bottom:1px solid #bec9cf;background:#fff;margin-bottom:12px}.resource h2{font-size:21px}h1{font-size:38px}footer{padding:25px 4vw}

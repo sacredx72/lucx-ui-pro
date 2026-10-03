@@ -1,0 +1,2 @@
+body{background:#171c24;color:#dce3eb;font-family:monospace;}
+.manual{display:grid;grid-template-columns:210px 1fr 200px;min-height:100vh}.manual header{grid-column:1/-1;padding:20px;display:flex;justify-content:space-between;border-bottom:1px solid #404854}.manual aside{padding:25px;border-right:1px solid #404854}.manual nav a{display:block;padding:12px 0}.manual main{padding:35px;max-width:850px}.manual-rail{padding:25px;border-left:1px solid #404854}h1{font-size:37px}

@@ -1,0 +1,2 @@
+body{background:#e9e3d7;color:#393b32;font-family:Georgia,serif;}
+.index-cards{max-width:1240px;margin:auto;padding:40px}.index-cards header{max-width:750px;margin-bottom:40px}h1{font-size:55px;font-weight:normal}.card-wall{display:grid;grid-template-columns:repeat(3,1fr);gap:25px}.index-card{padding:25px;background:#faf8ef;box-shadow:4px 6px 0 #c6bcaa;min-height:240px}.index-card h2{font:28px Georgia}.index-card small{font:11px monospace}.index-card:nth-child(3n){background:#e0e5d5}

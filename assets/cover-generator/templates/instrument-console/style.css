@@ -1,0 +1,2 @@
+body{background:#0c1520;color:#c5e5eb;font-family:monospace;}
+.console-head{border-bottom:1px solid #315063;padding:25px}.console{max-width:1250px;margin:auto;padding:30px;display:grid;grid-template-columns:1.1fr 1fr;gap:25px}.readout,.controls,.plot{border:1px solid #315063;padding:25px;background:#102030}.plot{grid-column:1/-1}h1{font-size:34px}.dial{width:240px;max-width:100%;margin:20px auto}.meter-value{font-size:55px;color:var(--accent)}footer{padding:20px 30px}

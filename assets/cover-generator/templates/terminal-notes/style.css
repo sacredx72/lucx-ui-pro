@@ -1,0 +1,2 @@
+body{background:#101414;color:#b5cfbc;font-family:monospace;}
+.terminal{max-width:1050px;margin:45px auto;padding:30px;border:1px solid #35483d;box-shadow:12px 12px 0 #1b2420}.terminal-bar{border-bottom:1px solid #35483d;padding-bottom:18px}.terminal-bar span{color:#80b396}.prompt{margin-top:40px;color:#67b981}h1{font-size:38px}.terminal-columns{display:grid;grid-template-columns:1fr 1fr;gap:40px}.command-output{min-height:100px;background:#0b0e0c;padding:20px}

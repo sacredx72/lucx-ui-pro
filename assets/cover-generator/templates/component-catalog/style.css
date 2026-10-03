@@ -1,0 +1,2 @@
+body{background:#eaeef1;color:#293644;font-family:Arial,sans-serif;}
+.catalog-head{padding:25px 5vw;display:flex;justify-content:space-between;background:#fff}.catalog{display:grid;grid-template-columns:240px 1fr;gap:35px;max-width:1300px;margin:auto;padding:40px}.inventory{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}.product{background:#fff;padding:20px;border:1px solid #d1d8de}.product svg{max-height:170px}.product h2{font-size:20px}h1{font-size:35px}.filters button{display:block;width:100%;text-align:left;margin:7px 0}footer{padding:25px 5vw}

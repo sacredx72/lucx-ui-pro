@@ -1,0 +1,2 @@
+body{background:#0c1423;color:#e0e3ee;font-family:Georgia,serif;}
+.atlas-head{padding:25px 5vw;display:flex;justify-content:space-between;border-bottom:1px solid #344257}.atlas{display:grid;grid-template-columns:2fr 1fr;gap:40px;padding:40px 5vw}h1{font-size:52px;font-weight:normal}.atlas-view svg{height:400px;width:100%}.atlas aside{border-left:1px solid #344257;padding-left:30px}.atlas-bottom{padding:10px 5vw 40px}footer{padding:25px 5vw}

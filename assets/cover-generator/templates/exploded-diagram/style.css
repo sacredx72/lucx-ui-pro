@@ -1,0 +1,2 @@
+body{background:#dbe7eb;color:#20394a;font-family:monospace;}
+.drawing-title{padding:20px 35px;border-bottom:2px solid #3e6679;display:flex;justify-content:space-between}.drawing{display:grid;grid-template-columns:3fr 1fr;min-height:75vh}.drawing-canvas{padding:35px;background-image:linear-gradient(#b6cbd633 1px,transparent 1px),linear-gradient(90deg,#b6cbd633 1px,transparent 1px);background-size:24px 24px}.drawing aside{border-left:1px solid #7595a5;padding:30px}.part-button{display:block;margin:12px 0;width:100%;text-align:left}h1{font-size:36px}footer{padding:20px 35px}

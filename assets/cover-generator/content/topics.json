@@ -1,0 +1,386 @@
+[
+  {
+    "title": "Precision geometry",
+    "intro": "Dimensional measurements describe both a value and the conditions under which it was obtained.",
+    "category": "reference",
+    "group": "technical",
+    "facts": [
+      "A measurement needs a unit.",
+      "Resolution and accuracy are different properties.",
+      "Repeated measurements help reveal variation.",
+      "Temperature can affect dimensional readings."
+    ]
+  },
+  {
+    "title": "Material surfaces",
+    "intro": "Surface texture changes how an object interacts with light, contact and wear.",
+    "category": "materials",
+    "group": "technical",
+    "facts": [
+      "Roughness describes small-scale surface variation.",
+      "A coating and its substrate behave as a system.",
+      "A finish should be described with a measurement method.",
+      "Lighting direction affects the appearance of texture."
+    ]
+  },
+  {
+    "title": "Optical assemblies",
+    "intro": "An optical assembly combines geometry, alignment and the properties of its materials.",
+    "category": "optics",
+    "group": "technical",
+    "facts": [
+      "Focal length describes the optical power of a lens.",
+      "Aperture limits the bundle of light entering a system.",
+      "Alignment changes should be recorded consistently.",
+      "Reflections depend on angle and surface treatment."
+    ]
+  },
+  {
+    "title": "Signal sampling",
+    "intro": "A sampled signal is a sequence of observations taken at defined intervals.",
+    "category": "signals",
+    "group": "technical",
+    "facts": [
+      "Sampling interval determines sampling frequency.",
+      "Noise can arise from several independent sources.",
+      "A plotted trace is a representation of the samples.",
+      "Filtering changes the frequency content of a signal."
+    ]
+  },
+  {
+    "title": "Mechanical motion",
+    "intro": "Motion can be described through position, velocity and the constraints of the mechanism.",
+    "category": "mechanics",
+    "group": "technical",
+    "facts": [
+      "Velocity describes change in position over time.",
+      "Friction converts mechanical energy into heat.",
+      "Clearance and preload describe different assembly conditions.",
+      "A reference frame must be defined before comparing motion."
+    ]
+  },
+  {
+    "title": "Thermal studies",
+    "intro": "Thermal behaviour depends on energy transfer, boundary conditions and the materials involved.",
+    "category": "thermal",
+    "group": "technical",
+    "facts": [
+      "Heat transfer can occur through conduction, convection and radiation.",
+      "Temperature and heat describe different quantities.",
+      "A sensor records temperature at its own location.",
+      "Transient measurements require a time reference."
+    ]
+  },
+  {
+    "title": "Circuit fundamentals",
+    "intro": "A circuit description connects component behaviour with the relationships between voltage and current.",
+    "category": "electronics",
+    "group": "technical",
+    "facts": [
+      "Resistance is measured in ohms.",
+      "Capacitance is measured in farads.",
+      "A schematic describes connections rather than physical placement.",
+      "Component tolerances affect the behaviour of an assembly."
+    ]
+  },
+  {
+    "title": "Robotic mechanisms",
+    "intro": "A robotic mechanism combines mechanical structure, actuation, sensing and control.",
+    "category": "robotics",
+    "group": "technical",
+    "facts": [
+      "A joint constrains the relative motion of connected parts.",
+      "A sensor provides observations to a control system.",
+      "Coordinate frames describe the position of components.",
+      "Repeatability differs from absolute positioning accuracy."
+    ]
+  },
+  {
+    "title": "Acoustic spaces",
+    "intro": "Acoustic observations describe sound in relation to its source, environment and measurement method.",
+    "category": "acoustics",
+    "group": "technical",
+    "facts": [
+      "Frequency is measured in hertz.",
+      "Sound pressure depends on the measurement position.",
+      "Reflections can alter the response of an enclosed space.",
+      "A spectrum separates a signal into frequency components."
+    ]
+  },
+  {
+    "title": "Energy systems",
+    "intro": "Energy-system studies compare storage, conversion and losses within a clearly defined boundary.",
+    "category": "energy",
+    "group": "technical",
+    "facts": [
+      "Power is the rate of energy transfer.",
+      "Efficiency requires a defined input and output.",
+      "Stored energy and instantaneous power are different quantities.",
+      "A comparison needs consistent operating conditions."
+    ]
+  },
+  {
+    "title": "Imaging methods",
+    "intro": "An image records a projection of a scene through a particular optical and sampling process.",
+    "category": "imaging",
+    "group": "technical",
+    "facts": [
+      "Exposure time affects motion blur.",
+      "Pixel count alone does not determine image quality.",
+      "A calibration target provides a repeatable reference.",
+      "Contrast depends on both the scene and the imaging system."
+    ]
+  },
+  {
+    "title": "Astronomical observations",
+    "intro": "An observing record relates an instrument setup to a position, a time and the conditions of observation.",
+    "category": "astronomy",
+    "group": "technical",
+    "facts": [
+      "An angular field of view describes an area of sky.",
+      "Long exposures can reveal motion or tracking differences.",
+      "Instrument settings should accompany an observing record.",
+      "A chart and a photograph represent observations differently."
+    ]
+  },
+  {
+    "title": "Manufacturing notes",
+    "intro": "A manufacturing record connects design intent with process settings and observations.",
+    "category": "manufacturing",
+    "group": "technical",
+    "facts": [
+      "A tolerance defines an allowed dimensional interval.",
+      "A fixture constrains a workpiece during an operation.",
+      "Process variation should be recorded over repeated runs.",
+      "Inspection criteria should be established before comparison."
+    ]
+  },
+  {
+    "title": "Structural forms",
+    "intro": "Structural studies consider geometry, material properties and the conditions of loading.",
+    "category": "structures",
+    "group": "technical",
+    "facts": [
+      "A load path describes how forces pass through a structure.",
+      "Stiffness and strength describe different properties.",
+      "Boundary conditions influence deformation.",
+      "A scale model requires careful interpretation."
+    ]
+  },
+  {
+    "title": "Computational models",
+    "intro": "A computational model makes assumptions explicit and represents relationships in a form that can be evaluated.",
+    "category": "computing",
+    "group": "technical",
+    "facts": [
+      "Inputs and outputs should be defined before evaluation.",
+      "A numerical approximation introduces discretisation choices.",
+      "A result should be interpreted alongside its assumptions.",
+      "A repeatable calculation records its parameters."
+    ]
+  },
+  {
+    "title": "Laboratory practice",
+    "intro": "A useful laboratory record captures the setup, procedure, observations and limits of an investigation.",
+    "category": "laboratory",
+    "group": "technical",
+    "facts": [
+      "A reference sample supports comparison.",
+      "A procedure should identify the variables it changes.",
+      "An observation is distinct from an interpretation.",
+      "A record is more useful when its conditions are explicit."
+    ]
+  },
+  {
+    "title": "Landscape photography",
+    "intro": "A landscape photograph brings together light, viewpoint and the time spent observing a place.",
+    "category": "photography",
+    "group": "creative",
+    "facts": [
+      "The direction of light changes the appearance of a landscape.",
+      "A consistent viewpoint makes a sequence easier to compare.",
+      "A foreground can give a photograph a sense of scale.",
+      "Weather and season influence both colour and contrast."
+    ]
+  },
+  {
+    "title": "Typography studies",
+    "intro": "Typography gives written language a visual rhythm through letterforms, spacing and arrangement.",
+    "category": "design",
+    "group": "creative",
+    "facts": [
+      "Line length affects the rhythm of reading.",
+      "Spacing helps separate groups of information.",
+      "Type size and contrast contribute to a visual hierarchy.",
+      "A page should be considered at the size at which it will be read."
+    ]
+  },
+  {
+    "title": "Ceramic forms",
+    "intro": "Ceramic objects bring together the character of a material and the choices made while shaping it.",
+    "category": "craft",
+    "group": "creative",
+    "facts": [
+      "A glaze can change both colour and surface texture.",
+      "Clay bodies differ in their appearance and behaviour.",
+      "Small variations are part of many handmade objects.",
+      "A sketch can help compare the proportions of a form."
+    ]
+  },
+  {
+    "title": "Coffee notebooks",
+    "intro": "A coffee notebook is a place to record a brewing method, its conditions and the impressions it produces.",
+    "category": "culinary",
+    "group": "creative",
+    "facts": [
+      "Grind size influences the way water passes through coffee.",
+      "Brewing time is one useful detail to keep in a record.",
+      "A tasting note describes an impression rather than a universal judgement.",
+      "Changing one variable at a time makes a comparison easier."
+    ]
+  },
+  {
+    "title": "Seasonal kitchen",
+    "intro": "A seasonal kitchen starts with ingredients, simple preparations and attention to texture and flavour.",
+    "category": "culinary",
+    "group": "creative",
+    "facts": [
+      "A recipe is easier to repeat when quantities and timing are recorded.",
+      "Ingredients vary with their source and season.",
+      "Texture and temperature shape the experience of a dish.",
+      "Preparing ingredients before cooking helps organise the work."
+    ]
+  },
+  {
+    "title": "Indoor gardens",
+    "intro": "An indoor garden develops through observation of light, growth and the conditions around each plant.",
+    "category": "nature",
+    "group": "creative",
+    "facts": [
+      "Plants have different light requirements.",
+      "A pot and its drainage influence the conditions around roots.",
+      "New growth offers one way to observe a plant over time.",
+      "A garden notebook can record changes without rushing to conclusions."
+    ]
+  },
+  {
+    "title": "Botanical observations",
+    "intro": "Botanical notes describe the shapes, textures and seasonal changes visible in plants.",
+    "category": "nature",
+    "group": "creative",
+    "facts": [
+      "Leaf arrangement is a useful feature to record.",
+      "Flowers and fruits may appear at different times of year.",
+      "A sketch can preserve details that are easy to overlook.",
+      "A location and date give an observation useful context."
+    ]
+  },
+  {
+    "title": "Walking journals",
+    "intro": "A walking journal collects the small details of a route: light, sounds, surfaces and places to pause.",
+    "category": "travel",
+    "group": "creative",
+    "facts": [
+      "A short route can offer many different observations.",
+      "Time of day changes the character of a familiar place.",
+      "A sketch and a written note can complement each other.",
+      "A useful route description includes distance and terrain."
+    ]
+  },
+  {
+    "title": "Coastal sketches",
+    "intro": "Coastal sketching is an exercise in observing changing light, open space and the meeting of land and water.",
+    "category": "art",
+    "group": "creative",
+    "facts": [
+      "A horizon establishes the main division of a coastal scene.",
+      "A limited palette can clarify the relationship between shapes.",
+      "Quick studies help record a changing atmosphere.",
+      "The viewpoint determines which details belong in the composition."
+    ]
+  },
+  {
+    "title": "Bookbinding notes",
+    "intro": "A book combines a sequence of pages with a physical structure that supports how it is handled and read.",
+    "category": "craft",
+    "group": "creative",
+    "facts": [
+      "Paper grain influences how a sheet folds.",
+      "A binding should suit the size and use of the book.",
+      "A small mock-up can reveal problems in a proposed structure.",
+      "Margins affect both the visual and physical experience of a page."
+    ]
+  },
+  {
+    "title": "Reading notebooks",
+    "intro": "A reading notebook brings quotations, questions and personal observations into one place.",
+    "category": "books",
+    "group": "creative",
+    "facts": [
+      "A page reference helps a note remain useful later.",
+      "A summary and a quotation serve different purposes.",
+      "Questions can be kept alongside initial impressions.",
+      "Revisiting a note may reveal a change in interpretation."
+    ]
+  },
+  {
+    "title": "Listening studies",
+    "intro": "A listening notebook records impressions of rhythm, instrumentation and the way a piece develops.",
+    "category": "music",
+    "group": "creative",
+    "facts": [
+      "A repeated phrase can give a piece a recognisable structure.",
+      "Changes in texture can draw attention to a passage.",
+      "Listening context can influence an impression.",
+      "A personal description need not claim a universal judgement."
+    ]
+  },
+  {
+    "title": "Furniture sketches",
+    "intro": "Furniture studies explore proportion, use and the relationship between an object and the space around it.",
+    "category": "design",
+    "group": "creative",
+    "facts": [
+      "A scale drawing helps compare proportions.",
+      "Materials contribute to both appearance and construction.",
+      "The intended use should inform the shape of an object.",
+      "A model can make an idea easier to discuss."
+    ]
+  },
+  {
+    "title": "Textile textures",
+    "intro": "Textile notes describe the visual and tactile qualities of woven, knitted and layered surfaces.",
+    "category": "craft",
+    "group": "creative",
+    "facts": [
+      "The direction of a weave can affect its appearance.",
+      "Lighting helps reveal the relief of a textured surface.",
+      "A sample is useful when comparing colour and handle.",
+      "Care requirements differ between materials."
+    ]
+  },
+  {
+    "title": "Small-space studies",
+    "intro": "A small space can be studied through movement, daylight and the arrangement of everyday objects.",
+    "category": "architecture",
+    "group": "creative",
+    "facts": [
+      "Clear circulation makes a layout easier to use.",
+      "Daylight changes throughout the day.",
+      "Storage can be considered alongside the activities of a room.",
+      "A plan and a view describe different aspects of a space."
+    ]
+  },
+  {
+    "title": "Visual storytelling",
+    "intro": "A visual story connects images through sequence, contrast and the details that invite a reader to continue.",
+    "category": "art",
+    "group": "creative",
+    "facts": [
+      "A sequence can create relationships between separate images.",
+      "A caption may add context without repeating the image.",
+      "Variation in scale changes the rhythm of a layout.",
+      "An edit is clearer when its purpose is stated."
+    ]
+  }
+]

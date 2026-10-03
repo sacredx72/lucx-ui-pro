@@ -1,0 +1,2 @@
+body{background:#161d29;color:#dfe7ef;font-family:monospace;}
+.signal{max-width:1200px;margin:auto;padding:35px}.signal-top{display:flex;justify-content:space-between;padding:15px 0;border-bottom:1px solid #435569}h1{font-size:38px}.signal-screen{background:#0b111b;border:1px solid #435569;padding:20px;margin:30px 0}.signal-bottom{display:grid;grid-template-columns:1fr 1fr;gap:35px}

@@ -1,0 +1,2 @@
+body{background:#133347;color:#dae9eb;font-family:monospace;}
+.blueprint{margin:25px;border:2px solid #779dad;padding:30px;background-image:linear-gradient(#739cab15 1px,transparent 1px),linear-gradient(90deg,#739cab15 1px,transparent 1px);background-size:20px 20px}.blueprint-top{display:flex;justify-content:space-between;border-bottom:2px solid;padding-bottom:20px}h1{font-size:44px}.blueprint-grid{display:grid;grid-template-columns:2fr 1fr;gap:40px;margin:30px 0}.blueprint-notes{display:grid;grid-template-columns:1fr 1fr;gap:30px;border-top:1px solid;padding-top:25px}

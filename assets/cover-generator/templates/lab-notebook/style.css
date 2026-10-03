@@ -1,0 +1,2 @@
+body{background:#faf7ed;color:#303b44;font-family:Georgia,serif;}
+.notebook{display:grid;grid-template-columns:240px 1fr;max-width:1200px;margin:auto;min-height:100vh}.notebook aside{padding:40px 25px;border-right:2px solid #d9cdbb}.notebook nav a{display:block;padding:10px 0}.notebook main{padding:45px;background:repeating-linear-gradient(transparent 0 31px,#e9e3d8 31px 32px)}h1{font-size:49px;line-height:1.1}.story-section{padding:25px 0;font-size:18px;line-height:1.85}.story-section h2{font-weight:normal;font-size:29px}

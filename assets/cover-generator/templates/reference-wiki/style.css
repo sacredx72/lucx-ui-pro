@@ -1,0 +1,2 @@
+body{background:#f5f7f8;color:#23313c;font-family:Arial,sans-serif;}
+.wiki{display:grid;grid-template-columns:255px 1fr;min-height:100vh}.wiki aside{background:#e7edf0;padding:35px 25px;border-right:1px solid #ccd5dc}.wiki nav a{display:block;padding:10px 0}.wiki main{max-width:1000px;padding:50px}h1{font-size:43px}.tab-strip{border-bottom:1px solid #bbb}

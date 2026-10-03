@@ -1,0 +1,2 @@
+body{background:#faf7f0;color:#343931;font-family:Arial,sans-serif;}
+.bulletin-head{display:flex;justify-content:space-between;padding:25px 5vw;border-bottom:1px solid #b6bdae}.bulletin{display:grid;grid-template-columns:1fr 2fr;gap:60px;max-width:1180px;margin:auto;padding:50px 30px}h1{font-size:51px;letter-spacing:-2px}.release{padding:30px 0;border-bottom:1px solid #c4c9bf}.release strong{font-size:28px}.release p{line-height:1.85}footer{padding:25px 5vw}

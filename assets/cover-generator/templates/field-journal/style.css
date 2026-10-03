@@ -1,0 +1,2 @@
+body{margin:0;background:#f3f0e5;color:#273c32;font-family:Georgia,serif;}
+.paper{max-width:1120px;margin:auto;padding:32px}h1{text-align:center;font:65px Georgia;margin:25px 0}nav{border-block:3px double;padding:15px;text-align:center}.edition{display:grid;grid-template-columns:3fr 1fr;gap:40px;margin-top:40px}h2{font:48px Georgia}.lead{font-size:22px}aside{border-left:1px solid;padding-left:25px}article p{line-height:1.9}footer{border-top:3px double;padding:25px 0}

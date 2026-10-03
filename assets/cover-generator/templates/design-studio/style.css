@@ -1,0 +1,2 @@
+body{background:#e8ddc9;color:#382b24;font-family:Arial,sans-serif;}
+.studio-head{padding:30px 6vw;display:flex;justify-content:space-between}.studio{padding:20px 6vw}.studio-cover{display:grid;grid-template-columns:1.2fr 1fr;gap:60px;align-items:center;min-height:65vh}h1{font-size:clamp(55px,7vw,100px);letter-spacing:-4px;line-height:.95}.studio-feature{padding:70px 0;font:42px Georgia;max-width:850px}.studio-process{border-block:1px solid;padding:25px 0}.studio-story{columns:2;column-gap:45px;padding:45px 0}footer{padding:30px 6vw}

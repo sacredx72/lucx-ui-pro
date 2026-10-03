@@ -1,0 +1,2 @@
+body{background:#f2f6f3;color:#2b4137;font-family:Arial,sans-serif;}
+.process{max-width:1100px;margin:auto;padding:40px}.process header{display:flex;justify-content:space-between}h1{font-size:55px}.flow{display:flex;gap:15px;align-items:stretch;margin:45px 0}.flow-stage{flex:1;background:#dce8df;padding:25px;position:relative;border-radius:10px}.flow-stage:after{content:"→";position:absolute;right:-16px;top:40%;font-size:25px}.flow-stage:last-child:after{content:none}.process-detail{max-width:850px;margin:40px auto}

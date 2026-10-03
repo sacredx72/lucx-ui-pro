@@ -1,0 +1,2 @@
+body{background:#e4e5de;color:#283b34;font-family:monospace;}
+.pocket{width:min(570px,calc(100% - 40px));margin:10vh auto;background:#f3f5e8;border:2px solid #71836a;border-radius:18px;padding:35px;box-shadow:10px 14px 0 #bac4b2}.pocket-name{font-size:11px;letter-spacing:2px}h1{font-size:33px}.calculator{background:#d6e3cd;border:1px solid #879e7c;padding:25px;margin:25px 0}.calculator output{display:block;font-size:35px;margin:20px 0}
