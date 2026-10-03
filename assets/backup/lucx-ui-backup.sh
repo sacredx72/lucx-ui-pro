@@ -951,6 +951,16 @@ PY_META_AWG
         systemctl stop "${svc}" 2>/dev/null || true
     done
 
+    # A restore replaces the generated cover, including its old page directory.
+    # Clean only owned files; old backups without a generator record still work.
+    if [[ -f /var/lib/lucx-ui-preinstall/cover-generator.json ]]; then
+        [[ -f /usr/local/lib/lucx-ui-pro/cover-generator/generator.py ]] || {
+            red "Cover cleanup helper missing; restore stopped."
+            return 1
+        }
+        python3 /usr/local/lib/lucx-ui-pro/cover-generator/generator.py cleanup || return 1
+    fi
+
     # ── restore files ─────────────────────────────────────────────────────
     blue "==> Restoring files..."
     if [[ -d "${staging}/files" ]]; then
@@ -1031,6 +1041,15 @@ PY_META_AWG
     [[ -f /usr/local/sbin/lucx-apply-qdisc ]] && chmod +x /usr/local/sbin/lucx-apply-qdisc
     find /usr/local/lib/3x-ui-pro -name "*.py" -exec chmod +x {} \; 2>/dev/null || true
     find /usr/local/lib/lucx-ui-pro -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+
+    # Restore the archived site exactly; never regenerate or download a cover.
+    if [[ -f /var/lib/lucx-ui-preinstall/cover-generator.json ]]; then
+        [[ -f /usr/local/lib/lucx-ui-pro/cover-generator/generator.py ]] &&
+            python3 /usr/local/lib/lucx-ui-pro/cover-generator/generator.py check || {
+                red "Restored cover files failed integrity verification."
+                return 1
+            }
+    fi
 
     # Reconcile Fail2ban through the panel CLI. This keeps the restored jail/filter/action
     # format aligned with the x-ui version instead of treating copied files as authoritative.
@@ -1337,7 +1356,7 @@ What is backed up:
   /usr/local/x-ui                 panel binary + xray core
   /usr/bin/x-ui                   x-ui management CLI
   /usr/local/lib/3x-ui-pro        optional helper scripts
-  /usr/local/lib/lucx-ui-pro      rkn-guard automatic-update scripts
+  /usr/local/lib/lucx-ui-pro      cover generator and automatic-update helpers
   /usr/local/sbin/lucx-apply-qdisc  network qdisc helper
   /etc/letsencrypt                SSL certificates
   /root/cert                      panel cert symlinks
