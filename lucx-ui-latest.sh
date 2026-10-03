@@ -70,7 +70,8 @@ Pak="apt-get"
 # ─── Constants ───────────────────────────────────────────────────────────────
 XUIDB="/etc/x-ui/x-ui.db"
 GITHUB_RAW="https://raw.githubusercontent.com/ttrroyy/lucx-ui-pro/main"
-FAKE_SITE_COUNT=50
+COVER_GENERATOR_SHA256="76d4b7b1b9858b626888200b7d546518a5399245e073a153a217b0fec6f674b0"
+COVER_GENERATOR_DIR="/usr/local/lib/lucx-ui-pro/cover-generator"
 PREINSTALL_STATE_DIR="/var/lib/lucx-ui-preinstall"
 INSTALL_IN_PROGRESS_FILE="${PREINSTALL_STATE_DIR}/install-in-progress"
 
@@ -983,24 +984,103 @@ choose_webproxy_domain() {
     done
     echo
 }
+install_cover_generator() {
+    local archive cached="${COVER_GENERATOR_DIR}/.package-sha256"
+    if [[ -f "$cached" && -f "$COVER_GENERATOR_DIR/generator.py" ]] &&
+       [[ "$(cat "$cached")" == "$COVER_GENERATOR_SHA256" ]]; then
+        return 0
+    fi
+    archive=$(mktemp /tmp/lucx-cover-package.XXXXXX) || return 1
+    if ! curl -fSL --connect-timeout 15 --max-time 120 --retry 2 \
+        "${GITHUB_RAW}/assets/cover-generator/cover-generator-v1.tar.gz" -o "$archive"; then
+        rm -f "$archive"
+        msg_err "Failed to download the cover generator."
+        return 1
+    fi
+    if ! python3 - "$archive" "$COVER_GENERATOR_DIR" "$COVER_GENERATOR_SHA256" <<'PY_COVER_PACKAGE'
+from pathlib import Path, PurePosixPath
+import hashlib, os, shutil, sys, tarfile, tempfile
+archive, destination, expected = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+    raise SystemExit('Cover package checksum mismatch')
+if destination.is_symlink():
+    raise SystemExit('Cover source directory is a symlink')
+destination.parent.mkdir(parents=True, exist_ok=True)
+stage = Path(tempfile.mkdtemp(prefix='.cover-source-', dir=destination.parent))
+previous = None
+try:
+    with tarfile.open(archive, 'r:gz') as bundle:
+        members = bundle.getmembers()
+        for member in members:
+            name = PurePosixPath(member.name)
+            if name.is_absolute() or '..' in name.parts or '\\' in member.name or not (member.isfile() or member.isdir()):
+                raise ValueError('Unsafe cover package member')
+        # Manually extract only regular files/directories; never links/devices.
+        for member in members:
+            target = stage / member.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if member.isdir():
+                target.mkdir(exist_ok=True)
+            else:
+                with bundle.extractfile(member) as source, target.open('wb') as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(0o644)
+    for required in ('generator.py', 'manifest.json', 'content/topics.json', 'content/names.json'):
+        if not (stage / required).is_file():
+            raise ValueError('Incomplete cover package')
+    for directory in [stage] + [p for p in stage.rglob('*') if p.is_dir()]:
+        directory.chmod(0o755)
+    (stage / '.package-sha256').write_text(expected + '\n', encoding='ascii')
+    (stage / '.package-sha256').chmod(0o644)
+    if destination.exists():
+        previous = Path(tempfile.mkdtemp(prefix='.cover-old-', dir=destination.parent))
+        previous.rmdir()
+        destination.rename(previous)
+    try:
+        stage.rename(destination)
+    except OSError:
+        if previous is not None:
+            previous.rename(destination)
+            previous = None
+        raise
+finally:
+    if stage.exists(): shutil.rmtree(stage)
+    if previous is not None and previous.exists(): shutil.rmtree(previous)
+PY_COVER_PACKAGE
+    then
+        rm -f "$archive"
+        msg_err "Cover generator package validation failed."
+        return 1
+    fi
+    rm -f "$archive"
+}
+
+install_cover_site() {
+    install_cover_generator || return 1
+    python3 "$COVER_GENERATOR_DIR/generator.py" generate || return 1
+    python3 "$COVER_GENERATOR_DIR/generator.py" check || return 1
+    chown -R www-data:www-data /var/www/html || return 1
+    msg_ok "Local cover site generated and checked."
+}
+
+cleanup_cover_site() {
+    [[ -f "${PREINSTALL_STATE_DIR}/cover-generator.json" ]] || return 0
+    [[ -f "$COVER_GENERATOR_DIR/generator.py" ]] || {
+        msg_err "Cover cleanup helper is missing. Restore generator sources before full removal."
+        return 1
+    }
+    python3 "$COVER_GENERATOR_DIR/generator.py" cleanup || return 1
+}
+
 install_tproxy_site() {
     [[ "${DEPLOY_TPROXY}" == "1" ]] || return 0
-    local idx site_id url tries=0
-    mkdir -p /var/www/html
-
-    # Panel, Reality and Telegram WEB-proxy use the same cover directory.
-    while [[ ! -s /var/www/html/index.html ]] && (( tries < 8 )); do
-        tries=$((tries + 1)); idx=$(( (RANDOM % FAKE_SITE_COUNT) + 1 ))
-        site_id=$(printf "site-%02d" "$idx")
-        url="${GITHUB_RAW}/assets/fake-sites/${site_id}/index.html"
-        curl -fsSL "$url" -o /var/www/html/index.html || rm -f /var/www/html/index.html
-    done
-    if [[ ! -s /var/www/html/index.html ]]; then printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title></title></head><body></body></html>' > /var/www/html/index.html; fi
-    [[ -s /var/www/html/index.html ]] || { msg_err "Не удалось создать /var/www/html/index.html"; return 1; }
+    # Keep the shared site during Telegram removal/reinstallation. A legacy
+    # installation is migrated only when it has no generated cover record.
+    install_cover_generator || return 1
+    python3 "$COVER_GENERATOR_DIR/generator.py" ensure || return 1
     rm -rf /var/www/tproxy
-    chown -R www-data:www-data /var/www/html 2>/dev/null || true
-    chmod 644 /var/www/html/index.html
-    msg_ok "WEB-proxy uses shared camouflage from /var/www/html."
+    chown -R www-data:www-data /var/www/html || return 1
+    msg_ok "WEB-proxy uses the existing shared cover from /var/www/html."
 }
 insert_tproxy_inbound() {
     [[ "${DEPLOY_TPROXY}" == "1" && -n "${webproxy_domain}" ]] || return 0
@@ -2094,6 +2174,8 @@ uninstall_xui() {
         msg_err "Ownership snapshot missing. Cannot safely uninstall an older or foreign installation."
         return 1
     }
+    # Remove the generated site before deleting its helper or restoring baseline.
+    cleanup_cover_site || return 1
     msg_inf "Начинаю удаление LucX-UI..."
     msg_inf "Останавливаю службы панели..."
     systemctl stop x-ui nginx mtr-backend AdGuardHome lucx-apply-qdisc lucx-qdisc-sync.path lucx-awg-sysctl-guard.path 2>/dev/null || true
@@ -3476,22 +3558,6 @@ EOF
 
 # INSTALL FAKE SITE
 # ─────────────────────────────────────────────────────────────────────────────
-install_fake_site() {
-    local idx=$(( (RANDOM % FAKE_SITE_COUNT) + 1 ))
-    local site_id
-    site_id=$(printf "site-%02d" "$idx")
-    local url="${GITHUB_RAW}/assets/fake-sites/${site_id}/index.html"
-
-    mkdir -p /var/www/html
-    if curl -fsSL "$url" -o /var/www/html/index.html; then
-        chown -R www-data:www-data /var/www/html 2>/dev/null || true
-        chmod 644 /var/www/html/index.html
-        msg_ok "Fake cover site '${site_id}' installed."
-    else
-        msg_err "Failed to download fake site ${site_id} from GitHub."
-    fi
-}
-
 # ─────────────────────────────────────────────────────────────────────────────
 # AMNEZIAWG / PANEL BBR COMPATIBILITY
 #
@@ -4595,7 +4661,7 @@ main() {
     fi
     configure_xui_db || return 1
     setup_fail2ban || return 1
-    install_fake_site || return 1
+    install_cover_site || return 1
     install_tproxy_site || return 1
     tune_system || return 1
     patch_panel_bbr_script
