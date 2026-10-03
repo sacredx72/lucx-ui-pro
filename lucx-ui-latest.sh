@@ -749,6 +749,11 @@ choose_extra_inbounds() {
         if [[ -n "$tty" ]]; then read -r ans <"$tty" || ans=""; else read -r ans || ans=""; fi
         mapped=$(echo "$ans" | tr -d '[:space:]')
         [[ -n "$mapped" ]] || continue
+        if [[ ! "$mapped" =~ ^[1-5](,[1-5])*$ ]] ||
+           [[ "$mapped" != "1" && ",$mapped," == *",1,"* ]]; then
+            msg_err "Введите номера 2–5 через запятую либо 1 без других номеров."
+            continue
+        fi
         if [[ ",$mapped," == *",5,"* && "$arch" != "x86_64" ]]; then
             msg_err "Telegram WEB-proxy доступен только на x86_64 (MTProxy)."
             continue
@@ -4549,6 +4554,8 @@ setup_firewall() {
 net.ipv4.ip_forward=1
 EOF
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    ufw default deny incoming
+    ufw default allow outgoing
     ufw default allow routed
     ufw allow 22/tcp
     ufw allow 80/tcp
